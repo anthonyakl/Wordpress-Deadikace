@@ -132,12 +132,19 @@ Add each of these:
 | `LLM_PROVIDER`        | `anthropic` or `gemini`                                                |
 | `ANTHROPIC_API_KEY`   | your Claude API key (only needed if `LLM_PROVIDER` is `anthropic`)     |
 | `GEMINI_API_KEY`      | your Gemini API key (only needed if `LLM_PROVIDER` is `gemini`)        |
+| `PEXELS_API_KEY`      | free key from https://www.pexels.com/api/ — used to find article images |
+| `TARGET_CATEGORY`     | exact name of the WP category to file posts under, e.g. `Latest News` |
 | `POST_STATUS`         | `draft` (recommended to start) or `publish`                            |
 
 You only need to fill in the API key secret matching whichever
 `LLM_PROVIDER` you chose — the other one can be left blank or omitted.
 Switching providers later is just changing the `LLM_PROVIDER` secret value
 and making sure the matching key is set; no code changes needed.
+
+**Getting a Pexels key**: go to https://www.pexels.com/api/, click
+"Get Started", sign up (free), and copy the API key shown on your
+dashboard. No credit card required, and the free tier (200 requests/hour)
+is far more than this agent needs.
 
 ## 6. Test it before trusting the schedule
 
