@@ -44,6 +44,34 @@ MIN_SOURCE_COUNT = int(os.environ.get("MIN_SOURCE_COUNT", "1"))
 # How far back (in hours) to look at competitor feeds for "recent" news
 LOOKBACK_HOURS = int(os.environ.get("LOOKBACK_HOURS", "48"))
 
+# --- WordPress category every agent-generated post is filed under ---
+# Set to exactly match one of your existing category names (case-insensitive).
+# The agent will create it if it somehow doesn't exist yet, but it's meant
+# to match one you already have (e.g. "Latest News").
+TARGET_CATEGORY = os.environ.get("TARGET_CATEGORY", "Latest News")
+
+# --- Images ---
+# Pexels (https://www.pexels.com/api/) has a generous free tier and a
+# straightforward API -- used to find royalty-free, commercially-usable
+# stock photos relevant to each article. Get a free key at
+# https://www.pexels.com/api/
+PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY", "")
+
+# How many images to request per article (in addition to the featured
+# image). The model is instructed to include this many section images
+# scaled to article length -- this is an upper bound.
+MAX_IMAGES_PER_ARTICLE = int(os.environ.get("MAX_IMAGES_PER_ARTICLE", "4"))
+
+# --- "Latest posts" block appended to the end of every article ---
+LATEST_POSTS_COUNT = int(os.environ.get("LATEST_POSTS_COUNT", "5"))
+
+# --- Article body font size ---
+# Many WP themes default post-body text to a small size. This wraps each
+# article's content in a container with an explicit font size so it reads
+# comfortably regardless of the theme's default. Adjust if it looks too
+# big/small on your theme.
+ARTICLE_FONT_SIZE_PX = int(os.environ.get("ARTICLE_FONT_SIZE_PX", "18"))
+
 # --- Competitor RSS feeds ---
 # These are used ONLY to detect trending topics (titles/summaries/links).
 # We never scrape or reproduce full competitor article text.
