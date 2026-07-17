@@ -44,6 +44,23 @@ MIN_SOURCE_COUNT = int(os.environ.get("MIN_SOURCE_COUNT", "1"))
 # How far back (in hours) to look at competitor feeds for "recent" news
 LOOKBACK_HOURS = int(os.environ.get("LOOKBACK_HOURS", "48"))
 
+# --- Topic ranking ---
+# Topics are scored as: (source_count * SOURCE_COUNT_WEIGHT) + freshness_score
+# + keyword_bonus (if any PRIORITY_KEYWORDS match). freshness_score decays
+# linearly from LOOKBACK_HOURS (brand new) to 0 (at the edge of the lookback
+# window), so a very recent single-source story can still outrank an older
+# multi-source one. Raise SOURCE_COUNT_WEIGHT to favor breadth of coverage
+# more; lower it to favor recency more.
+SOURCE_COUNT_WEIGHT = int(os.environ.get("SOURCE_COUNT_WEIGHT", "10"))
+
+# Optional: comma-separated list of favorite bands/artists/genres. Any
+# topic whose headline mentions one gets a scoring boost. Leave empty to
+# disable. Example: "Metallica,Iron Maiden,thrash metal"
+PRIORITY_KEYWORDS = [
+    kw.strip() for kw in os.environ.get("PRIORITY_KEYWORDS", "").split(",") if kw.strip()
+]
+PRIORITY_KEYWORD_BONUS = int(os.environ.get("PRIORITY_KEYWORD_BONUS", "15"))
+
 # --- WordPress category every agent-generated post is filed under ---
 # Set to exactly match one of your existing category names (case-insensitive).
 # The agent will create it if it somehow doesn't exist yet, but it's meant
