@@ -34,7 +34,19 @@ covered it (titles, snippets, and links -- not full articles). Your job:
    present in the provided summaries, and attribute them naturally
    (e.g., "according to a statement shared with outlets this week").
    Do not invent quotes or facts.
-4. Output must be valid JSON matching this exact schema, and NOTHING else
+4. Include image placeholders in content_html: put <!--IMAGE_1--> right
+   after the article's opening paragraph (this becomes both the featured
+   image and the first in-article image), then <!--IMAGE_2-->,
+   <!--IMAGE_3--> etc., one after each subsequent <h2> section heading.
+   Use 2-4 placeholders total depending on article length (short article:
+   2, long article: up to 4). For each placeholder, provide a matching
+   entry in "image_queries", in the same order. Each query must be a
+   generic stock-photo search phrase about music/concert/instrument
+   imagery in general (e.g. "electric guitar on stage", "crowd at rock
+   concert", "vinyl records collection") -- NEVER a specific real person's
+   name or a specific copyrighted event, since these images come from a
+   general stock photo library, not press photography.
+5. Output must be valid JSON matching this exact schema, and NOTHING else
    -- no markdown code fences, no preamble, no explanation:
 
 {{
@@ -42,7 +54,8 @@ covered it (titles, snippets, and links -- not full articles). Your job:
   "seo_title": "string, SEO title tag, under 60 chars, includes primary keyword",
   "meta_description": "string, under 155 chars, includes primary keyword, makes people want to click",
   "focus_keyword": "string, 2-4 word primary SEO keyword phrase for this article",
-  "tags": ["3-6 relevant tags, e.g. band names, genres"],
+  "tags": ["exactly 8 to 10 relevant tags, e.g. band names, genres, related artists, subgenres"],
+  "image_queries": ["generic stock-photo search phrase for each IMAGE placeholder used, in order"],
   "excerpt": "string, 1-2 sentence teaser, under 200 chars",
   "content_html": "string, the full article body as clean HTML using <p>, <h2>, <h3> tags where natural. 500-800 words. Do NOT include an <h1> (WordPress adds the title separately)."
 }}
