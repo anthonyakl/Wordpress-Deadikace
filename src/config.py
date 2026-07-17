@@ -21,7 +21,12 @@ CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 
 # --- Google Gemini API --- only required if LLM_PROVIDER == "gemini"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+# "gemini-flash-lite-latest" is Google's auto-updating alias for their
+# current lite model -- it has the most generous free-tier quota (as of
+# writing: 15 requests/min, 1,000/day) and avoids breaking again when
+# Google retires a specific dated model version. Override via the
+# GEMINI_MODEL secret if you want a specific model instead.
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-lite-latest")
 
 # --- Behavior ---
 # "publish" = goes live immediately. "draft" = saved in WP for you to review first.
