@@ -50,7 +50,16 @@ def run():
         try:
             article = draft_article(topic)
         except Exception as e:
+            error_text = str(e)
             print(f"[error] Failed to draft article for '{headline}': {e}")
+            # If the LLM provider is out of quota/credits, retrying on the next
+            # topic will just fail the same way -- stop the whole run instead
+            # of burning through every remaining topic with the same error.
+            if "RESOURCE_EXHAUSTED" in error_text or "429" in error_text or "insufficient_quota" in error_text:
+                print("[fatal] LLM provider quota/billing error detected. "
+                      "Stopping this run early instead of retrying every topic. "
+                      "Check your provider's billing/quota dashboard before the next scheduled run.")
+                break
             continue
 
         # Add a couple of internal links for SEO if related posts exist
