@@ -47,6 +47,9 @@ def run():
         print(f"Drafting article for topic: {headline} "
               f"(covered by {topic['source_count']} outlet(s))")
 
+        if published_count > 0:
+            time.sleep(10)  # stay comfortably under free-tier requests-per-minute limits
+
         try:
             article = draft_article(topic)
         except Exception as e:
@@ -55,10 +58,13 @@ def run():
             # If the LLM provider is out of quota/credits, retrying on the next
             # topic will just fail the same way -- stop the whole run instead
             # of burning through every remaining topic with the same error.
-            if "RESOURCE_EXHAUSTED" in error_text or "429" in error_text or "insufficient_quota" in error_text:
-                print("[fatal] LLM provider quota/billing error detected. "
-                      "Stopping this run early instead of retrying every topic. "
-                      "Check your provider's billing/quota dashboard before the next scheduled run.")
+            if ("RESOURCE_EXHAUSTED" in error_text or "429" in error_text
+                    or "insufficient_quota" in error_text
+                    or "NOT_FOUND" in error_text or "404" in error_text):
+                print("[fatal] LLM provider error looks systemic (quota/billing/model "
+                      "config issue), not specific to this topic. Stopping this run "
+                      "early instead of retrying every topic with the same failure. "
+                      "Check your provider's dashboard and model name before the next run.")
                 break
             continue
 
