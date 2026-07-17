@@ -56,9 +56,17 @@ password.
 5. Copy the generated password immediately (spaces included) — you won't
    see it again.
 
-> If you don't see this section, your host may have it disabled, or your
-> WordPress version is older than 5.6. Ask your host to enable
-> Application Passwords, or install the free "Application Passwords" plugin.
+> If you don't see this section: this is a known issue on Hostinger and a
+> few other hosts. Fix it by creating a file at
+> `wp-content/mu-plugins/force-app-passwords.php` (via File Manager or
+> FTP, creating the `mu-plugins` folder if needed) containing:
+> ```php
+> <?php
+> add_filter('wp_is_application_passwords_available', '__return_true');
+> ```
+> Files in `mu-plugins` load automatically, no activation needed. Refresh
+> Users → Profile afterward. If it's still missing, check for a security
+> plugin (Wordfence, iThemes Security) with a toggle hiding it.
 
 ## 3. Expose Yoast SEO fields to the REST API (one-time)
 
@@ -86,27 +94,50 @@ add_action('init', function () {
 (I can generate this as a tiny standalone plugin zip for you if you'd
 rather not touch `functions.php` — just ask.)
 
-## 4. Get an Anthropic API key
+## 4. Get an LLM API key (choose Claude or Gemini)
 
+The agent supports either provider — pick one via the `LLM_PROVIDER` secret
+in Step 5.
+
+**Option A — Claude (paid, pay-as-you-go):**
 1. Go to https://console.anthropic.com
 2. Create an API key under **Settings → API Keys**
-3. Note: this is billed separately from your Claude.ai subscription — API
-   usage is pay-as-you-go. Drafting 2 articles a day is a small cost
-   (roughly a few dollars a month at typical article lengths), but check
+3. Billed separately from any Claude.ai subscription. Drafting 2 articles
+   a day is a small cost (roughly a few dollars a month), but check
    current pricing at https://docs.claude.com.
+
+**Option B — Gemini (has a free tier):**
+1. Go to https://aistudio.google.com/apikey and create an API key
+2. Before relying on the free tier long-term for a commercial site, read
+   Google's current terms yourself at https://ai.google.dev/gemini-api/terms
+   — free-tier usage terms (commercial use, data-training policy) can
+   change, and it's worth confirming they fit your situation.
+3. The free tier is generous enough for 2 articles/day with plenty of
+   headroom (roughly 1,500 requests/day as of writing, but check
+   https://ai.google.dev/gemini-api/docs/rate-limits for current numbers).
+
+**Never paste an API key into a chat with an AI assistant, including this
+one — add it directly into GitHub Secrets yourself in the next step.**
 
 ## 5. Add your secrets to GitHub
 
 In your repo: **Settings → Secrets and variables → Actions → New repository secret**.
 Add each of these:
 
-| Secret name          | Value                                              |
-|-----------------------|----------------------------------------------------|
-| `WP_BASE_URL`         | `https://www.deadikace.com`                        |
-| `WP_USERNAME`         | your WordPress username                             |
-| `WP_APP_PASSWORD`     | the Application Password from Step 2 (with spaces)  |
-| `ANTHROPIC_API_KEY`   | your Claude API key from Step 4                     |
-| `POST_STATUS`         | `draft` (recommended to start) or `publish`         |
+| Secret name          | Value                                                                 |
+|-----------------------|------------------------------------------------------------------------|
+| `WP_BASE_URL`         | `https://www.deadikace.com`                                           |
+| `WP_USERNAME`         | your WordPress username                                                |
+| `WP_APP_PASSWORD`     | the Application Password from Step 2 (with spaces)                     |
+| `LLM_PROVIDER`        | `anthropic` or `gemini`                                                |
+| `ANTHROPIC_API_KEY`   | your Claude API key (only needed if `LLM_PROVIDER` is `anthropic`)     |
+| `GEMINI_API_KEY`      | your Gemini API key (only needed if `LLM_PROVIDER` is `gemini`)        |
+| `POST_STATUS`         | `draft` (recommended to start) or `publish`                            |
+
+You only need to fill in the API key secret matching whichever
+`LLM_PROVIDER` you chose — the other one can be left blank or omitted.
+Switching providers later is just changing the `LLM_PROVIDER` secret value
+and making sure the matching key is set; no code changes needed.
 
 ## 6. Test it before trusting the schedule
 
