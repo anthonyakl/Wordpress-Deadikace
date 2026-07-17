@@ -3,6 +3,8 @@ Thin WordPress REST API client using an Application Password.
 Docs: https://developer.wordpress.org/rest-api/
 """
 
+import re
+
 import requests
 from requests.auth import HTTPBasicAuth
 
@@ -27,6 +29,18 @@ def get_recent_post_titles(per_page=50):
     return [p["title"]["rendered"] for p in resp.json()]
 
 
+def get_latest_posts(limit=5):
+    """Used to build the 'Latest Posts' block appended to new articles."""
+    resp = requests.get(
+        f"{API_ROOT}/posts",
+        params={"per_page": limit, "_fields": "title,link", "orderby": "date", "order": "desc"},
+        auth=AUTH,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return [{"title": p["title"]["rendered"], "link": p["link"]} for p in resp.json()]
+
+
 def get_or_create_tag(name):
     resp = requests.get(f"{API_ROOT}/tags", params={"search": name}, auth=AUTH, timeout=30)
     resp.raise_for_status()
@@ -35,6 +49,22 @@ def get_or_create_tag(name):
         return matches[0]["id"]
 
     create = requests.post(f"{API_ROOT}/tags", json={"name": name}, auth=AUTH, timeout=30)
+    create.raise_for_status()
+    return create.json()["id"]
+
+
+def get_or_create_category(name):
+    resp = requests.get(f"{API_ROOT}/categories", params={"search": name}, auth=AUTH, timeout=30)
+    resp.raise_for_status()
+    # Prefer an exact case-insensitive name match over a loose search hit
+    matches = resp.json()
+    for m in matches:
+        if m["name"].strip().lower() == name.strip().lower():
+            return m["id"]
+    if matches:
+        return matches[0]["id"]
+
+    create = requests.post(f"{API_ROOT}/categories", json={"name": name}, auth=AUTH, timeout=30)
     create.raise_for_status()
     return create.json()["id"]
 
@@ -51,7 +81,47 @@ def search_related_posts(keyword, limit=3):
     return [{"title": p["title"]["rendered"], "link": p["link"]} for p in resp.json()]
 
 
-def create_post(article):
+def upload_media(image_bytes, filename, alt_text=""):
+    """
+    Uploads an image to the WordPress media library.
+    Returns dict with id and source_url, or None on failure.
+    """
+    safe_filename = re.sub(r"[^a-zA-Z0-9._-]", "-", filename)
+    if not safe_filename.lower().endswith((".jpg", ".jpeg", ".png")):
+        safe_filename += ".jpg"
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{safe_filename}"',
+        "Content-Type": "image/jpeg",
+    }
+
+    resp = requests.post(
+        f"{API_ROOT}/media",
+        headers=headers,
+        data=image_bytes,
+        auth=AUTH,
+        timeout=60,
+    )
+    resp.raise_for_status()
+    media = resp.json()
+
+    if alt_text:
+        # Alt text has to be set via a follow-up PATCH -- the upload
+        # endpoint doesn't accept it directly.
+        try:
+            requests.post(
+                f"{API_ROOT}/media/{media['id']}",
+                json={"alt_text": alt_text[:250]},
+                auth=AUTH,
+                timeout=30,
+            )
+        except requests.RequestException as e:
+            print(f"[warn] Could not set alt text for media {media['id']}: {e}")
+
+    return {"id": media["id"], "source_url": media.get("source_url", "")}
+
+
+def create_post(article, category_id=None, featured_media_id=None):
     """
     article: dict with keys:
       title, content_html, excerpt, tags (list[str]),
@@ -71,6 +141,11 @@ def create_post(article):
             YOAST_FOCUS_KEYWORD_FIELD: article.get("focus_keyword", ""),
         },
     }
+
+    if category_id:
+        payload["categories"] = [category_id]
+    if featured_media_id:
+        payload["featured_media"] = featured_media_id
 
     resp = requests.post(f"{API_ROOT}/posts", json=payload, auth=AUTH, timeout=60)
     resp.raise_for_status()
