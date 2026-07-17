@@ -4,6 +4,16 @@ Discovers trending rock-music stories by polling competitor RSS feeds.
 Important: this module only ever reads titles, summaries, and links from
 RSS feeds (the same public data an RSS reader app would show you). It does
 not scrape or store full competitor article bodies.
+
+There is no reliable public way to see competitors' actual engagement
+(views, shares) -- that data isn't published, and "most popular" widgets
+(where they exist at all) are inconsistent and fragile to scrape. Instead,
+topics are ranked using two honest signals we do have:
+  1. How many outlets are covering the story (cross-outlet coverage is a
+     real signal that something is genuinely newsworthy).
+  2. How recent it is (freshness decays the score the older a story gets).
+An optional list of priority keywords (favorite bands/artists/genres) can
+also boost a story's ranking -- see PRIORITY_KEYWORDS in config.py.
 """
 
 import time
@@ -12,7 +22,10 @@ from datetime import datetime, timezone, timedelta
 
 import feedparser
 
-from config import COMPETITOR_FEEDS, LOOKBACK_HOURS, MIN_SOURCE_COUNT
+from config import (
+    COMPETITOR_FEEDS, LOOKBACK_HOURS, MIN_SOURCE_COUNT,
+    SOURCE_COUNT_WEIGHT, PRIORITY_KEYWORDS, PRIORITY_KEYWORD_BONUS,
+)
 
 
 def _entry_timestamp(entry):
@@ -89,17 +102,52 @@ def cluster_topics(entries):
         if len(sources) < MIN_SOURCE_COUNT:
             continue
         topic_id = hashlib.sha1(cluster["items"][0]["title"].encode()).hexdigest()[:10]
+
+        timestamps = [item["published"] for item in cluster["items"] if item["published"]]
+        most_recent = max((datetime.fromisoformat(ts) for ts in timestamps), default=None)
+
         result.append({
             "topic_id": topic_id,
             "items": cluster["items"],
             "source_count": len(sources),
+            "most_recent": most_recent.isoformat() if most_recent else None,
         })
 
-    # Most-covered stories first
-    result.sort(key=lambda c: c["source_count"], reverse=True)
     return result
+
+
+def _score_topic(topic, now):
+    """
+    Higher score = higher publishing priority. Combines:
+      - coverage: more outlets covering it -> more newsworthy
+      - freshness: newer stories score higher, decaying linearly to 0
+        over LOOKBACK_HOURS
+      - optional keyword boost for favorite bands/artists/genres
+    """
+    coverage_score = topic["source_count"] * SOURCE_COUNT_WEIGHT
+
+    if topic["most_recent"]:
+        age_hours = (now - datetime.fromisoformat(topic["most_recent"])).total_seconds() / 3600
+        freshness_score = max(0.0, LOOKBACK_HOURS - age_hours)
+    else:
+        freshness_score = 0.0  # unknown publish time -> treat as stale
+
+    keyword_bonus = 0
+    if PRIORITY_KEYWORDS:
+        title_lower = topic["items"][0]["title"].lower()
+        if any(kw.lower() in title_lower for kw in PRIORITY_KEYWORDS):
+            keyword_bonus = PRIORITY_KEYWORD_BONUS
+
+    return coverage_score + freshness_score + keyword_bonus
 
 
 def get_trending_topics():
     entries = fetch_recent_entries()
-    return cluster_topics(entries)
+    topics = cluster_topics(entries)
+
+    now = datetime.now(timezone.utc)
+    for topic in topics:
+        topic["score"] = round(_score_topic(topic, now), 1)
+
+    topics.sort(key=lambda t: t["score"], reverse=True)
+    return topics
