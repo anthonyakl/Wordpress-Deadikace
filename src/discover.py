@@ -25,6 +25,7 @@ import feedparser
 from config import (
     COMPETITOR_FEEDS, LOOKBACK_HOURS, MIN_SOURCE_COUNT,
     SOURCE_COUNT_WEIGHT, PRIORITY_KEYWORDS, PRIORITY_KEYWORD_BONUS,
+    EXCLUDE_KEYWORDS,
 )
 
 
@@ -56,10 +57,17 @@ def fetch_recent_entries():
             ts = _entry_timestamp(entry)
             if ts and ts < cutoff:
                 continue
+
+            title = entry.get("title", "").strip()
+            summary = entry.get("summary", "").strip()
+            combined_lower = f"{title} {summary}".lower()
+            if any(kw.lower() in combined_lower for kw in EXCLUDE_KEYWORDS):
+                continue
+
             all_entries.append({
                 "source": feed["name"],
-                "title": entry.get("title", "").strip(),
-                "summary": entry.get("summary", "").strip(),
+                "title": title,
+                "summary": summary,
                 "link": entry.get("link", "").strip(),
                 "published": ts.isoformat() if ts else None,
             })
