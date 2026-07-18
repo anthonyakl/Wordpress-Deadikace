@@ -1,9 +1,8 @@
 """
-Finds and downloads royalty-free, commercially-usable stock photos via the
-Pexels API (https://www.pexels.com/api/) based on search queries the LLM
-generates for each article. Pexels photos are free to use commercially with
-no attribution legally required, but we credit the photographer in a
-caption anyway as good practice.
+Fallback image source: Pexels (https://www.pexels.com/api/), royalty-free
+stock photos, used only when Wikimedia Commons (wiki_images.py) doesn't
+have a real, properly-licensed photo of the actual subject. See
+wiki_images.py for why Google Image Search results aren't used here.
 """
 
 import requests
@@ -12,10 +11,18 @@ from config import PEXELS_API_KEY
 
 SEARCH_URL = "https://api.pexels.com/v1/search"
 
+_warned_missing_key = False
+
 
 def search_image(query):
     """Returns a dict with url/photographer/alt for the top match, or None."""
+    global _warned_missing_key
     if not PEXELS_API_KEY:
+        if not _warned_missing_key:
+            print("[warn] PEXELS_API_KEY is not set -- stock-photo fallback images "
+                  "will be skipped for this entire run. Add the PEXELS_API_KEY "
+                  "GitHub Secret to enable images (free key at pexels.com/api).")
+            _warned_missing_key = True
         return None
 
     try:
@@ -43,7 +50,9 @@ def search_image(query):
     }
 
 
-def download_image_bytes(url):
+def download_image(url):
+    """Returns (bytes, content_type)."""
     resp = requests.get(url, timeout=30)
     resp.raise_for_status()
-    return resp.content
+    content_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
+    return resp.content, content_type
