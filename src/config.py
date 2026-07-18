@@ -61,6 +61,19 @@ PRIORITY_KEYWORDS = [
 ]
 PRIORITY_KEYWORD_BONUS = int(os.environ.get("PRIORITY_KEYWORD_BONUS", "15"))
 
+# Rolling Stone's RSS feed covers all music genres, not just rock, so
+# without filtering it leaks pop/rap/K-pop stories in. Any entry whose
+# title contains one of these terms is dropped before topics are even
+# clustered. Override via the EXCLUDE_KEYWORDS secret (comma-separated)
+# if you want to adjust the list -- leave it empty to disable filtering.
+EXCLUDE_KEYWORDS = [
+    kw.strip() for kw in os.environ.get(
+        "EXCLUDE_KEYWORDS",
+        "rap,hip-hop,hip hop,k-pop,kpop,r&b,trap,reggaeton,"
+        "boy band,girl group,country music"
+    ).split(",") if kw.strip()
+]
+
 # --- WordPress category every agent-generated post is filed under ---
 # Set to exactly match one of your existing category names (case-insensitive).
 # The agent will create it if it somehow doesn't exist yet, but it's meant
