@@ -81,18 +81,24 @@ def search_related_posts(keyword, limit=3):
     return [{"title": p["title"]["rendered"], "link": p["link"]} for p in resp.json()]
 
 
-def upload_media(image_bytes, filename, alt_text=""):
+def upload_media(image_bytes, filename, alt_text="", content_type="image/jpeg"):
     """
     Uploads an image to the WordPress media library.
     Returns dict with id and source_url, or None on failure.
     """
-    safe_filename = re.sub(r"[^a-zA-Z0-9._-]", "-", filename)
-    if not safe_filename.lower().endswith((".jpg", ".jpeg", ".png")):
-        safe_filename += ".jpg"
+    ext_by_type = {
+        "image/jpeg": ".jpg", "image/jpg": ".jpg",
+        "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif",
+    }
+    ext = ext_by_type.get(content_type.lower(), ".jpg")
+
+    base_name = re.sub(r"[^a-zA-Z0-9._-]", "-", filename)
+    base_name = re.sub(r"\.(jpg|jpeg|png|webp|gif)$", "", base_name, flags=re.IGNORECASE)
+    safe_filename = base_name + ext
 
     headers = {
         "Content-Disposition": f'attachment; filename="{safe_filename}"',
-        "Content-Type": "image/jpeg",
+        "Content-Type": content_type,
     }
 
     resp = requests.post(
