@@ -168,6 +168,45 @@ frequency — https://crontab.guru is useful for building cron expressions.
 Each run drafts at most `MAX_ARTICLES_PER_RUN` (default 2) new articles,
 skipping topics that look like duplicates of your existing posts.
 
+## 8. How images work
+
+Every article gets 2-4 images. For each one, the agent:
+1. Searches **Wikimedia Commons** first for a real, properly-licensed photo
+   of the actual band/artist/album named in the article. Commons hosts
+   photography that photographers have deliberately released under
+   Creative Commons or public-domain licenses -- meaning it's genuinely
+   legal to reuse (including commercially), and the agent only accepts
+   files with an allowed license (CC0, public domain, or CC-BY variants;
+   never non-commercial-only licenses). Every Commons image gets an
+   automatic credit linking the photographer and exact license.
+2. Falls back to a generic **Pexels** stock photo only if no suitable
+   Commons match exists for that specific subject.
+
+**Note on Google Images**: this project deliberately does not scrape
+Google Image Search results. An image showing up in a Google search isn't
+thereby licensed for reuse -- most band/concert photos there belong to
+photographers or agencies who haven't licensed them for republishing, and
+adding a photo credit doesn't fix that; a credit states whose work it is,
+it doesn't grant permission to use it. Wikimedia Commons is the legal
+equivalent: real photos, but restricted to ones explicitly released for
+reuse.
+
+**If no images show up at all**, check the Action run's logs for a
+`[warn]` line — the most common cause is `PEXELS_API_KEY` not being set
+as a GitHub Secret, in which case Commons alone won't always have a match
+for every topic.
+
+## 9. How off-genre topics get filtered out
+
+Some competitor feeds (notably Rolling Stone) cover all music genres, not
+just rock — so without filtering, pop/rap/K-pop stories can slip in.
+Simple keyword matching can't reliably catch this (a headline about "Lil
+Baby" or "BTS" doesn't contain the word "rap" or "K-pop" anywhere), so
+the agent sends just the batch of candidate headlines (one call per run,
+not per article) to the configured LLM and asks it to identify which are
+genuinely rock-relevant before drafting begins.
+
+
 ## Tuning knobs (all in `src/config.py` or as GitHub Secrets)
 
 - `MAX_ARTICLES_PER_RUN` — how many articles to generate per run
@@ -177,6 +216,33 @@ skipping topics that look like duplicates of your existing posts.
 - `LOOKBACK_HOURS` — how recent a competitor story must be
 - `SITE_VOICE_GUIDELINES` in `config.py` — edit this to sharpen Deadikace's
   voice; the more specific, the better the output
+
+### How topics are prioritized
+
+There's no reliable public way to see competitors' actual article
+performance (view counts, shares) — that data isn't published anywhere,
+and scraping "most read" widgets (on sites that even have one) breaks
+constantly and isn't something to build a pipeline on. Instead, topics are
+scored using two honest signals from RSS:
+
+1. **Cross-outlet coverage** — a story covered by 3 outlets is more likely
+   to be a big deal than one covered by 1. Weighted by `SOURCE_COUNT_WEIGHT`
+   (default 10 points per outlet).
+2. **Freshness** — score decays linearly the older a story gets, down to 0
+   at the edge of `LOOKBACK_HOURS`. This means a story from 1 hour ago on a
+   single site can outrank one from 40 hours ago on three sites — tune
+   `SOURCE_COUNT_WEIGHT` up or down to shift that balance.
+
+Optionally, add a `PRIORITY_KEYWORDS` secret — a comma-separated list of
+bands/artists/genres you want prioritized whenever they show up in a
+headline, e.g. `Metallica,Iron Maiden,thrash metal`. Matching topics get a
+scoring boost (`PRIORITY_KEYWORD_BONUS`, default 15 points). Leave it
+blank/unset to disable.
+
+There's also an `EXCLUDE_KEYWORDS` secret (comma-separated, defaults to a
+sensible list of off-genre terms) that drops obviously off-topic entries
+before they're even clustered, as a cheap first-pass filter alongside the
+LLM-based relevance check described below.
 
 ## Costs to expect
 
