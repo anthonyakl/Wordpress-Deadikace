@@ -6,6 +6,7 @@ Invoked on a schedule by the GitHub Actions workflow.
 import sys
 import time
 import html
+import re
 
 from config import (
     MAX_ARTICLES_PER_RUN, POST_STATUS, TARGET_CATEGORY, LATEST_POSTS_COUNT,
@@ -18,7 +19,7 @@ from wordpress import (
     create_post, search_related_posts, upload_media,
 )
 from images import search_image as search_pexels_image, download_image as download_pexels_image
-from wiki_images import search_commons_image, download_image as download_commons_image
+from wiki_images import find_real_photo, download_image as download_commons_image
 
 
 def _title_already_covered(title, existing_titles):
@@ -52,7 +53,7 @@ def _process_images(article):
             continue
 
         source = None
-        photo = search_commons_image(query)
+        photo = find_real_photo(query)
         if photo:
             source = "commons"
         else:
@@ -130,14 +131,44 @@ def _append_latest_posts_block(article, latest_posts):
     article["content_html"] += "\n" + block
 
 
-def _apply_font_size(article):
-    """Wraps the article body so it renders at a comfortable, non-tiny
-    size regardless of the theme's default post-content font size."""
-    article["content_html"] = (
-        f'<div class="deadikace-article-body" '
-        f'style="font-size:{ARTICLE_FONT_SIZE_PX}px; line-height:1.7;">'
-        f'{article["content_html"]}</div>'
-    )
+_BLOCK_PATTERN = re.compile(
+    r"(?P<p><p>.*?</p>)"
+    r"|(?P<h3><h3>.*?</h3>)"
+    r"|(?P<h2><h2>.*?</h2>)"
+    r"|(?P<figure><figure[^>]*>.*?</figure>)"
+    r"|(?P<ul><ul[^>]*>.*?</ul>)",
+    re.DOTALL,
+)
+
+
+def _blockify(content_html, font_size_px):
+    """
+    Converts plain HTML into real Gutenberg block markup (wp:paragraph,
+    wp:heading, wp:image, wp:list) instead of one raw HTML blob. This is
+    what makes the post open as normal, individually-editable blocks in
+    the WordPress block editor -- a plain wrapped <div> of raw HTML gets
+    treated as a single uneditable Custom HTML block instead. Paragraph
+    text gets the medium font size as a real, editable block attribute
+    (not just an inline style baked into unstructured HTML).
+    """
+    parts = []
+    for m in _BLOCK_PATTERN.finditer(content_html):
+        if m.group("p"):
+            inner = m.group("p").replace("<p>", f'<p style="font-size:{font_size_px}px">', 1)
+            parts.append(
+                f'<!-- wp:paragraph {{"style":{{"typography":{{"fontSize":"{font_size_px}px"}}}}}} -->\n'
+                f'{inner}\n<!-- /wp:paragraph -->'
+            )
+        elif m.group("h3"):
+            parts.append(f'<!-- wp:heading {{"level":3}} -->\n{m.group("h3")}\n<!-- /wp:heading -->')
+        elif m.group("h2"):
+            parts.append(f'<!-- wp:heading -->\n{m.group("h2")}\n<!-- /wp:heading -->')
+        elif m.group("figure"):
+            parts.append(f'<!-- wp:image {{"sizeSlug":"large"}} -->\n{m.group("figure")}\n<!-- /wp:image -->')
+        elif m.group("ul"):
+            parts.append(f'<!-- wp:list -->\n{m.group("ul")}\n<!-- /wp:list -->')
+
+    return "\n\n".join(parts)
 
 
 def run():
@@ -212,8 +243,9 @@ def run():
         # Append the "Latest Posts" block
         _append_latest_posts_block(article, latest_posts)
 
-        # Ensure the article renders at a comfortable, medium font size
-        _apply_font_size(article)
+        # Convert to real Gutenberg blocks (keeps the post editable in the
+        # block editor) with the medium font size applied per-paragraph
+        article["content_html"] = _blockify(article["content_html"], ARTICLE_FONT_SIZE_PX)
 
         try:
             result = create_post(article, category_id=category_id, featured_media_id=featured_media_id)
