@@ -12,12 +12,13 @@ from config import (
     ARTICLE_FONT_SIZE_PX,
 )
 from discover import get_trending_topics
-from draft import draft_article
+from draft import draft_article, filter_rock_relevant_topics
 from wordpress import (
     get_recent_post_titles, get_latest_posts, get_or_create_category,
     create_post, search_related_posts, upload_media,
 )
-from images import search_image, download_image_bytes
+from images import search_image as search_pexels_image, download_image as download_pexels_image
+from wiki_images import search_commons_image, download_image as download_commons_image
 
 
 def _title_already_covered(title, existing_titles):
@@ -34,33 +35,52 @@ def _process_images(article):
     """
     Finds, downloads, and uploads an image for each IMAGE placeholder in
     content_html, then swaps the placeholders for real <figure> markup.
-    Returns the id of the first successfully uploaded image (for use as
-    the featured/thumbnail image), or None if none succeeded.
+    Tries Wikimedia Commons first (real, properly-licensed photos of the
+    actual bands/artists/events), and falls back to a generic Pexels stock
+    photo only if no suitable Commons image is found. Returns the id of
+    the first successfully uploaded image (for use as the featured
+    image), or None if none succeeded.
     """
     queries = article.get("image_queries", [])
     content = article["content_html"]
     featured_media_id = None
+    any_image_added = False
 
     for i, query in enumerate(queries, start=1):
         placeholder = f"<!--IMAGE_{i}-->"
         if placeholder not in content:
             continue
 
-        photo = search_image(query)
+        source = None
+        photo = search_commons_image(query)
+        if photo:
+            source = "commons"
+        else:
+            photo = search_pexels_image(query)
+            if photo:
+                source = "pexels"
+
         if not photo:
-            print(f"[warn] No stock image found for query: '{query}'")
+            print(f"[warn] No usable image (Commons or Pexels) found for query: '{query}'")
             content = content.replace(placeholder, "")
             continue
 
         try:
-            image_bytes = download_image_bytes(photo["url"])
+            if source == "commons":
+                image_bytes, content_type = download_commons_image(photo["url"])
+                alt_text = photo["artist"]
+            else:
+                image_bytes, content_type = download_pexels_image(photo["url"])
+                alt_text = photo["alt"]
+
             media = upload_media(
                 image_bytes,
-                filename=f"image-{i}.jpg",
-                alt_text=photo["alt"],
+                filename=f"image-{i}",
+                alt_text=alt_text,
+                content_type=content_type,
             )
         except Exception as e:
-            print(f"[warn] Failed to download/upload image for '{query}': {e}")
+            print(f"[warn] Failed to download/upload image for '{query}' ({source}): {e}")
             content = content.replace(placeholder, "")
             continue
 
@@ -70,19 +90,33 @@ def _process_images(article):
 
         if featured_media_id is None:
             featured_media_id = media["id"]
+        any_image_added = True
 
-        alt = html.escape(photo["alt"])
+        if source == "commons":
+            credit_html = (
+                f'Photo: <a href="{photo["page_url"]}" target="_blank" rel="nofollow noopener">'
+                f'{html.escape(photo["artist"])}</a>, licensed '
+                f'<a href="{photo["license_url"]}" target="_blank" rel="nofollow noopener">'
+                f'{html.escape(photo["license_name"])}</a>, via Wikimedia Commons'
+            )
+        else:
+            credit_html = f'Photo by {html.escape(photo["photographer"])} via Pexels'
+
         figure_html = (
             f'<figure class="wp-block-image size-large">'
-            f'<img src="{media["source_url"]}" alt="{alt}"/>'
-            f'<figcaption>Photo by {html.escape(photo["photographer"])} '
-            f'via Pexels</figcaption></figure>'
+            f'<img src="{media["source_url"]}" alt="{html.escape(alt_text)}"/>'
+            f'<figcaption>{credit_html}</figcaption></figure>'
         )
         content = content.replace(placeholder, figure_html)
 
     # Clean up any unused placeholders (e.g. if model included more than it used)
     for i in range(1, 10):
         content = content.replace(f"<!--IMAGE_{i}-->", "")
+
+    if not any_image_added:
+        print("[warn] No images were added to this article at all. Check that "
+              "PEXELS_API_KEY is set (Wikimedia Commons alone won't always have "
+              "a match), and check the warnings above for the specific reason.")
 
     article["content_html"] = content
     return featured_media_id
@@ -113,6 +147,13 @@ def run():
 
     if not topics:
         print("No topics found this run. Exiting.")
+        return
+
+    print("Filtering for rock-relevant topics (some feeds cover all genres)...")
+    topics = filter_rock_relevant_topics(topics)
+
+    if not topics:
+        print("No rock-relevant topics found this run. Exiting.")
         return
 
     print("Fetching recent Deadikace posts to avoid duplicates...")
