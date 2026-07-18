@@ -32,5 +32,6 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           TARGET_CATEGORY: ${{ secrets.TARGET_CATEGORY }}
+          PRIORITY_KEYWORDS: ${{ secrets.PRIORITY_KEYWORDS }}
           POST_STATUS: ${{ secrets.POST_STATUS }}
         run: python main.py
