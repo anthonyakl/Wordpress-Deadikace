@@ -20,7 +20,7 @@ from wordpress import (
     create_post, search_related_posts, upload_media,
 )
 from images import search_image as search_pexels_image, download_image as download_pexels_image
-from wiki_images import find_real_photo, download_image as download_commons_image
+from wiki_images import find_real_photo, download_image as download_commons_image, extract_primary_subject
 
 
 def _title_already_covered(title, existing_titles):
@@ -55,6 +55,16 @@ def _process_images(article):
 
         source = None
         photo = find_real_photo(query)
+
+        # If the full query found nothing, retry with just the leading
+        # subject name (e.g. "ZZ Top live concert" -> "ZZ Top") -- a
+        # simpler query sometimes succeeds where a more specific one
+        # doesn't have a direct match.
+        if not photo:
+            simplified = extract_primary_subject(query)
+            if simplified and simplified.lower() != query.strip().lower():
+                photo = find_real_photo(simplified)
+
         if photo:
             source = "commons"
         else:
