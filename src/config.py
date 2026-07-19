@@ -6,43 +6,73 @@ never hardcode them here. See .env.example / GitHub Secrets setup in README.
 
 import os
 
+
+def _env(key, default=""):
+    """
+    Like os.environ.get, but also falls back to `default` when the
+    variable is present but empty. This matters because GitHub Actions
+    sets an env var to an empty string (not "unset") whenever a workflow
+    references a secret that doesn't exist or was left blank -- plain
+    os.environ.get(key, default) would silently use "" instead of the
+    intended default in that case.
+    """
+    val = os.environ.get(key)
+    return val if val not in (None, "") else default
+
+
+def _env_int(key, default):
+    val = _env(key, "")
+    if val == "":
+        return default
+    try:
+        return int(val)
+    except ValueError:
+        print(f"[warn] Env var {key}={val!r} is not a valid integer; using default {default}.")
+        return default
+
+
+def _env_list(key, default_csv):
+    val = _env(key, default_csv)
+    return [item.strip() for item in val.split(",") if item.strip()]
+
+
 # --- WordPress site ---
-WP_BASE_URL = os.environ.get("WP_BASE_URL", "https://www.deadikace.com")
+WP_BASE_URL = _env("WP_BASE_URL", "https://www.deadikace.com")
 WP_USERNAME = os.environ["WP_USERNAME"]          # your WP username
 WP_APP_PASSWORD = os.environ["WP_APP_PASSWORD"]  # WP Application Password (not your login password)
 
 # --- LLM provider selection ---
 # "anthropic" (Claude, paid) or "gemini" (Google, has a free tier)
-LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "anthropic").lower()
+LLM_PROVIDER = _env("LLM_PROVIDER", "anthropic").lower()
 
 # --- Anthropic (Claude) API --- only required if LLM_PROVIDER == "anthropic"
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
+ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY")
+CLAUDE_MODEL = _env("CLAUDE_MODEL", "claude-sonnet-4-6")
 
 # --- Google Gemini API --- only required if LLM_PROVIDER == "gemini"
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_API_KEY = _env("GEMINI_API_KEY")
 # "gemini-flash-lite-latest" is Google's auto-updating alias for their
 # current lite model -- it has the most generous free-tier quota (as of
 # writing: 15 requests/min, 1,000/day) and avoids breaking again when
 # Google retires a specific dated model version. Override via the
 # GEMINI_MODEL secret if you want a specific model instead.
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-lite-latest")
+GEMINI_MODEL = _env("GEMINI_MODEL", "gemini-flash-lite-latest")
 
 # --- Behavior ---
 # "publish" = goes live immediately. "draft" = saved in WP for you to review first.
 # Recommended: start with "draft" for a week or two, then switch to "publish".
-POST_STATUS = os.environ.get("POST_STATUS", "publish")  # "publish" or "draft"
+POST_STATUS = _env("POST_STATUS", "publish")  # "publish" or "draft"
 
 # Max number of new articles to generate per run
-MAX_ARTICLES_PER_RUN = int(os.environ.get("MAX_ARTICLES_PER_RUN", "2"))
+MAX_ARTICLES_PER_RUN = _env_int("MAX_ARTICLES_PER_RUN", 2)
 
 # A story must appear in at least this many competitor feeds to be
 # considered "trending" enough to write about. Set to 1 to write about
 # anything, 2+ to be more selective and reduce noise.
-MIN_SOURCE_COUNT = int(os.environ.get("MIN_SOURCE_COUNT", "1"))
+MIN_SOURCE_COUNT = _env_int("MIN_SOURCE_COUNT", 1)
 
 # How far back (in hours) to look at competitor feeds for "recent" news
-LOOKBACK_HOURS = int(os.environ.get("LOOKBACK_HOURS", "48"))
+LOOKBACK_HOURS = _env_int("LOOKBACK_HOURS", 48)
 
 # --- Topic ranking ---
 # Topics are scored as: (source_count * SOURCE_COUNT_WEIGHT) + freshness_score
@@ -51,56 +81,52 @@ LOOKBACK_HOURS = int(os.environ.get("LOOKBACK_HOURS", "48"))
 # window), so a very recent single-source story can still outrank an older
 # multi-source one. Raise SOURCE_COUNT_WEIGHT to favor breadth of coverage
 # more; lower it to favor recency more.
-SOURCE_COUNT_WEIGHT = int(os.environ.get("SOURCE_COUNT_WEIGHT", "10"))
+SOURCE_COUNT_WEIGHT = _env_int("SOURCE_COUNT_WEIGHT", 10)
 
 # Optional: comma-separated list of favorite bands/artists/genres. Any
 # topic whose headline mentions one gets a scoring boost. Leave empty to
 # disable. Example: "Metallica,Iron Maiden,thrash metal"
-PRIORITY_KEYWORDS = [
-    kw.strip() for kw in os.environ.get("PRIORITY_KEYWORDS", "").split(",") if kw.strip()
-]
-PRIORITY_KEYWORD_BONUS = int(os.environ.get("PRIORITY_KEYWORD_BONUS", "15"))
+PRIORITY_KEYWORDS = _env_list("PRIORITY_KEYWORDS", "")
+PRIORITY_KEYWORD_BONUS = _env_int("PRIORITY_KEYWORD_BONUS", 15)
 
 # Rolling Stone's RSS feed covers all music genres, not just rock, so
 # without filtering it leaks pop/rap/K-pop stories in. Any entry whose
 # title contains one of these terms is dropped before topics are even
 # clustered. Override via the EXCLUDE_KEYWORDS secret (comma-separated)
 # if you want to adjust the list -- leave it empty to disable filtering.
-EXCLUDE_KEYWORDS = [
-    kw.strip() for kw in os.environ.get(
-        "EXCLUDE_KEYWORDS",
-        "rap,hip-hop,hip hop,k-pop,kpop,r&b,trap,reggaeton,"
-        "boy band,girl group,country music"
-    ).split(",") if kw.strip()
-]
+EXCLUDE_KEYWORDS = _env_list(
+    "EXCLUDE_KEYWORDS",
+    "rap,hip-hop,hip hop,k-pop,kpop,r&b,trap,reggaeton,"
+    "boy band,girl group,country music"
+)
 
 # --- WordPress category every agent-generated post is filed under ---
 # Set to exactly match one of your existing category names (case-insensitive).
 # The agent will create it if it somehow doesn't exist yet, but it's meant
 # to match one you already have (e.g. "Latest News").
-TARGET_CATEGORY = os.environ.get("TARGET_CATEGORY", "Latest News")
+TARGET_CATEGORY = _env("TARGET_CATEGORY", "Latest News")
 
 # --- Images ---
 # Pexels (https://www.pexels.com/api/) has a generous free tier and a
 # straightforward API -- used to find royalty-free, commercially-usable
 # stock photos relevant to each article. Get a free key at
 # https://www.pexels.com/api/
-PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY", "")
+PEXELS_API_KEY = _env("PEXELS_API_KEY")
 
 # How many images to request per article (in addition to the featured
 # image). The model is instructed to include this many section images
 # scaled to article length -- this is an upper bound.
-MAX_IMAGES_PER_ARTICLE = int(os.environ.get("MAX_IMAGES_PER_ARTICLE", "4"))
+MAX_IMAGES_PER_ARTICLE = _env_int("MAX_IMAGES_PER_ARTICLE", 4)
 
 # --- "Latest posts" block appended to the end of every article ---
-LATEST_POSTS_COUNT = int(os.environ.get("LATEST_POSTS_COUNT", "5"))
+LATEST_POSTS_COUNT = _env_int("LATEST_POSTS_COUNT", 5)
 
 # --- Article body font size ---
-# Many WP themes default post-body text to a small size. This wraps each
-# article's content in a container with an explicit font size so it reads
-# comfortably regardless of the theme's default. Adjust if it looks too
-# big/small on your theme.
-ARTICLE_FONT_SIZE_PX = int(os.environ.get("ARTICLE_FONT_SIZE_PX", "18"))
+# Many WP themes default post-body text to a small size. This is applied
+# per-paragraph as a real block attribute so it reads comfortably
+# regardless of the theme's default, while staying editable in the block
+# editor. Adjust if it looks too big/small on your theme.
+ARTICLE_FONT_SIZE_PX = _env_int("ARTICLE_FONT_SIZE_PX", 18)
 
 # --- Competitor RSS feeds ---
 # These are used ONLY to detect trending topics (titles/summaries/links).
