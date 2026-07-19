@@ -54,15 +54,21 @@ def get_or_create_tag(name):
 
 
 def get_or_create_category(name):
+    if not name or not name.strip():
+        raise ValueError("get_or_create_category() called with an empty category name -- "
+                          "refusing to guess a category rather than risk picking the wrong one.")
+
     resp = requests.get(f"{API_ROOT}/categories", params={"search": name}, auth=AUTH, timeout=30)
     resp.raise_for_status()
-    # Prefer an exact case-insensitive name match over a loose search hit
     matches = resp.json()
+
+    # Only accept an EXACT case-insensitive name match. WP's search param
+    # does a loose partial match, so falling back to "the first result"
+    # when there's no exact match risks silently filing posts under an
+    # unrelated category -- better to create the intended one instead.
     for m in matches:
         if m["name"].strip().lower() == name.strip().lower():
             return m["id"]
-    if matches:
-        return matches[0]["id"]
 
     create = requests.post(f"{API_ROOT}/categories", json={"name": name}, auth=AUTH, timeout=30)
     create.raise_for_status()
