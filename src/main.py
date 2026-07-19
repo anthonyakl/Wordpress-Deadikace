@@ -14,6 +14,7 @@ from config import (
 )
 from discover import get_trending_topics
 from draft import draft_article, filter_rock_relevant_topics
+from article_fetch import enrich_topic_with_full_text
 from wordpress import (
     get_recent_post_titles, get_latest_posts, get_or_create_category,
     create_post, search_related_posts, upload_media,
@@ -207,6 +208,9 @@ def run():
 
         print(f"Drafting article for topic: {headline} "
               f"(covered by {topic['source_count']} outlet(s))")
+
+        print("Fetching full source article text for factual grounding...")
+        enrich_topic_with_full_text(topic)
 
         if published_count > 0:
             time.sleep(10)  # stay comfortably under free-tier requests-per-minute limits
