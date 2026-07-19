@@ -54,6 +54,31 @@ def _query_words(text):
     return {w.lower() for w in re.findall(r"[a-zA-Z']+", text) if len(w) > 2}
 
 
+# Public-domain archival dumps (old government surveys, textile/botanical
+# specimen scans, research station reports, etc.) show up disproportionately
+# often in loose Commons full-text search and are never a real band/artist
+# photo. Reject any candidate whose title/description/artist mentions these.
+_JUNK_INDICATORS = (
+    "swatch", "fabric", "textile", "specimen", "herbarium", "botanical",
+    "research station", "survey", "government printing", "topographic",
+    "nautical chart", "soil sample", "seismograph", "weather map",
+    "geological", "census", "cadastral", "microfiche",
+)
+
+
+def extract_primary_subject(query):
+    """
+    Pulls out the leading proper-noun phrase from a query, e.g.
+    "ZZ Top live concert" -> "ZZ Top". Falls back to None if the query
+    doesn't start with a recognizable capitalized phrase.
+    """
+    match = re.match(r"^((?:[A-Z][\w'&.-]*\s*)+)", query.strip())
+    if not match:
+        return None
+    phrase = match.group(1).strip()
+    return phrase if phrase else None
+
+
 def _file_info_from_commons(file_title):
     """Looks up license/artist metadata for a specific File: page on Commons."""
     try:
@@ -159,6 +184,7 @@ def _commons_search(query, min_width=800):
         return None
 
     query_kw = _query_words(query)
+    primary_subject = extract_primary_subject(query)
 
     for page in sorted(pages.values(), key=lambda p: p.get("index", 999)):
         imageinfo_list = page.get("imageinfo") or []
@@ -175,15 +201,28 @@ def _commons_search(query, min_width=800):
 
         page_title = page.get("title", "")
         description = _strip_html(extmeta.get("ImageDescription", {}).get("value", ""))
-        # Relevance sanity check -- reject matches that don't actually
-        # share meaningful words with the query (this is what filters out
-        # things like an unrelated scanned document matching on noise).
-        combined = f"{page_title} {description}".lower()
-        hits = sum(1 for w in query_kw if w in combined)
-        if query_kw and hits < max(1, len(query_kw) // 2):
+        artist_raw = _strip_html(extmeta.get("Artist", {}).get("value", ""))
+        combined = f"{page_title} {description} {artist_raw}".lower()
+
+        # Reject known non-photo archival junk (scanned reports, textile
+        # swatches, survey maps, etc.) regardless of any keyword overlap.
+        if any(indicator in combined for indicator in _JUNK_INDICATORS):
             continue
 
-        artist = _strip_html(extmeta.get("Artist", {}).get("value", "")) or "Unknown"
+        # Relevance check: if the query has a clear proper-noun subject
+        # (e.g. "ZZ Top"), require it to actually appear -- this is a much
+        # stronger signal than generic word overlap and is what would have
+        # caught an unrelated match. Fall back to word-overlap only when no
+        # such subject phrase could be extracted from the query.
+        if primary_subject:
+            if primary_subject.lower() not in combined:
+                continue
+        else:
+            hits = sum(1 for w in query_kw if w in combined)
+            if query_kw and hits < max(1, len(query_kw) // 2):
+                continue
+
+        artist = artist_raw or "Unknown"
         license_url = extmeta.get("LicenseUrl", {}).get("value", "")
         page_url = "https://commons.wikimedia.org/wiki/" + page_title.replace(" ", "_")
         thumb_url = info.get("thumburl") or info.get("url")
