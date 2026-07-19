@@ -21,26 +21,44 @@ from config import (
     SITE_VOICE_GUIDELINES,
 )
 
-DRAFT_SYSTEM_PROMPT = f"""You are a staff writer for Deadikace, a rock music blog.
+DRAFT_SYSTEM_PROMPT = f"""You are a staff news writer for Deadikace, a rock music blog.
 
 {SITE_VOICE_GUIDELINES}
 
-You will be given a news topic and short summaries of how several outlets
-covered it (titles, snippets, and links -- not full articles). Your job:
+You will be given a news topic and the source material several outlets
+published about it (for outlets where full text was retrievable, you'll
+have the full article; for others, only the RSS title/summary). Your job
+is to write a STRAIGHT NEWS REPORT, not an editorial or opinion piece --
+the same way a real reporter would write up a wire story using multiple
+outlets' coverage as their source material.
 
-1. Write a wholly ORIGINAL article about the same underlying news/topic.
-   Do not paraphrase, closely follow the structure of, or lift phrasing
-   from any of the provided source summaries. Treat them only as pointers
-   to the underlying facts and as a way to know this story is currently
-   newsworthy.
-2. Add genuine value: context, a clear angle or opinion, connections to
-   the band/artist's history, or why this matters to rock fans -- not
-   just a restatement of "X happened."
-3. If specific facts (dates, quotes, numbers) are needed, only use ones
-   present in the provided summaries, and attribute them naturally
-   (e.g., "according to a statement shared with outlets this week").
-   Do not invent quotes or facts.
-4. Include image placeholders in content_html: put <!--IMAGE_1--> right
+1. FACTUAL ACCURACY IS THE TOP PRIORITY. Every specific claim -- dates,
+   numbers, event names, direct quotes, who-said-what -- must come from
+   the provided source material. If a detail isn't in any of the sources,
+   do not include it, and do not infer or guess at specifics. It is
+   better to write a shorter, plainer article than to invent a plausible-
+   sounding detail. Do not add speculative framing, dramatic
+   interpretation, or editorializing about what something "means" beyond
+   what the sources themselves report.
+2. SYNTHESIZE ACROSS ALL provided sources to build the most complete,
+   accurate picture -- don't just rewrite the single source with the most
+   detail. Cross-check: if multiple sources report the same fact, that's
+   a signal it's solid; if only one source mentions a specific detail,
+   still fine to include it, but don't build the whole article's angle
+   around one outlet's framing.
+3. Direct quotes from the people involved (band members, reps, etc.) may
+   be quoted verbatim with attribution if they appear in the source
+   material -- these are factual statements, not the reporting
+   journalist's own copyrighted prose, so quoting them accurately is
+   good journalism, not something to paraphrase into vagueness.
+   HOWEVER: do not copy the reporting journalist's own sentences,
+   descriptions, structure, or paragraph order from any source. Write
+   your own original sentences built from the facts and quotes.
+4. Lead with the most newsworthy, concrete fact (the "what happened"),
+   not a scene-setting or scene-editorializing opener. A good test: could
+   this headline/opening be confirmed as accurate by someone who just
+   read the source material? If not, it's too speculative.
+5. Include image placeholders in content_html: put <!--IMAGE_1--> right
    after the article's opening paragraph (this becomes both the featured
    image and the first in-article image), then <!--IMAGE_2-->,
    <!--IMAGE_3--> etc., one after each subsequent <h2> section heading.
@@ -53,18 +71,18 @@ covered it (titles, snippets, and links -- not full articles). Your job:
    properly-licensed photo of that exact subject, and automatically fall
    back to a generic music-themed stock photo only if none is found. Keep
    each query concise (3-6 words).
-5. Output must be valid JSON matching this exact schema, and NOTHING else
+6. Output must be valid JSON matching this exact schema, and NOTHING else
    -- no markdown code fences, no preamble, no explanation:
 
 {{
-  "title": "string, compelling but not clickbait, under 70 chars",
+  "title": "string, accurate and specific (not vague or clickbait-y), states the actual news, under 70 chars",
   "seo_title": "string, SEO title tag, under 60 chars, includes primary keyword",
   "meta_description": "string, under 155 chars, includes primary keyword, makes people want to click",
   "focus_keyword": "string, 2-4 word primary SEO keyword phrase for this article",
   "tags": ["exactly 8 to 10 relevant tags, e.g. band names, genres, related artists, subgenres"],
   "image_queries": ["specific band/artist/album name + descriptive term for each IMAGE placeholder used, in order"],
-  "excerpt": "string, 1-2 sentence teaser, under 200 chars",
-  "content_html": "string, the full article body as clean HTML using <p>, <h2>, <h3> tags where natural. 500-800 words. Do NOT include an <h1> (WordPress adds the title separately)."
+  "excerpt": "string, 1-2 sentence factual teaser, under 200 chars",
+  "content_html": "string, the full article body as clean HTML using <p>, <h2>, <h3> tags where natural. 400-700 words -- write to the facts available, don't pad with speculation to hit a length target. Do NOT include an <h1> (WordPress adds the title separately)."
 }}
 """
 
@@ -169,15 +187,35 @@ def filter_rock_relevant_topics(topics):
 
 
 def draft_article(topic):
-    """topic: one cluster dict from discover.get_trending_topics()"""
-    source_summaries = "\n\n".join(
-        f"Source: {item['source']}\nTitle: {item['title']}\nSummary: {item['summary']}\nLink: {item['link']}"
-        for item in topic["items"]
-    )
+    """topic: one cluster dict from discover.get_trending_topics(), ideally
+    already enriched with full_text via article_fetch.enrich_topic_with_full_text"""
+    source_blocks = []
+    full_text_count = 0
+    for item in topic["items"]:
+        full_text = item.get("full_text")
+        if full_text:
+            full_text_count += 1
+            source_blocks.append(
+                f"Source: {item['source']} (FULL ARTICLE TEXT)\n"
+                f"Title: {item['title']}\n"
+                f"Full text: {full_text}\n"
+                f"Link: {item['link']}"
+            )
+        else:
+            source_blocks.append(
+                f"Source: {item['source']} (RSS summary only)\n"
+                f"Title: {item['title']}\n"
+                f"Summary: {item['summary']}\n"
+                f"Link: {item['link']}"
+            )
+
+    source_material = "\n\n".join(source_blocks)
     user_prompt = (
-        f"Topic covered by {topic['source_count']} outlet(s):\n\n"
-        f"{source_summaries}\n\n"
-        "Write the original Deadikace article now. Respond with ONLY the JSON object, no other text."
+        f"Topic covered by {topic['source_count']} outlet(s), "
+        f"{full_text_count} with full article text retrieved:\n\n"
+        f"{source_material}\n\n"
+        "Write the Deadikace news report now, synthesizing across all "
+        "sources above. Respond with ONLY the JSON object, no other text."
     )
 
     raw_text = _call_llm(DRAFT_SYSTEM_PROMPT, user_prompt, max_tokens=4000)
