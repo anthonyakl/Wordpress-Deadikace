@@ -13,11 +13,11 @@ from config import (
     ARTICLE_FONT_SIZE_PX,
 )
 from discover import get_trending_topics
-from draft import draft_article, filter_rock_relevant_topics
+from draft import draft_article, filter_rock_relevant_topics, verify_and_refine
 from article_fetch import enrich_topic_with_full_text
 from wordpress import (
     get_recent_post_titles, get_latest_posts, get_or_create_category,
-    create_post, search_related_posts, upload_media,
+    create_post, search_related_posts, upload_media, check_connectivity,
 )
 from images import search_image as search_pexels_image, download_image as download_pexels_image
 from wiki_images import find_real_photo, download_image as download_commons_image, extract_primary_subject
@@ -47,6 +47,7 @@ def _process_images(article):
     content = article["content_html"]
     featured_media_id = None
     any_image_added = False
+    used_urls = set()  # prevents the same photo being used twice in one article
 
     for i, query in enumerate(queries, start=1):
         placeholder = f"<!--IMAGE_{i}-->"
@@ -54,7 +55,7 @@ def _process_images(article):
             continue
 
         source = None
-        photo = find_real_photo(query)
+        photo = find_real_photo(query, exclude_urls=used_urls)
 
         # If the full query found nothing, retry with just the leading
         # subject name (e.g. "ZZ Top live concert" -> "ZZ Top") -- a
@@ -63,24 +64,27 @@ def _process_images(article):
         if not photo:
             simplified = extract_primary_subject(query)
             if simplified and simplified.lower() != query.strip().lower():
-                photo = find_real_photo(simplified)
+                photo = find_real_photo(simplified, exclude_urls=used_urls)
 
         if photo:
             source = "commons"
         else:
-            photo = search_pexels_image(query)
-            if photo:
+            pexels_photo = search_pexels_image(query)
+            if pexels_photo and pexels_photo["url"] not in used_urls:
+                photo = pexels_photo
                 source = "pexels"
 
         if not photo:
-            print(f"[warn] No usable image (Commons or Pexels) found for query: '{query}'")
+            print(f"[warn] No usable, not-already-used image found for query: '{query}'")
             content = content.replace(placeholder, "")
             continue
+
+        used_urls.add(photo["url"])
 
         try:
             if source == "commons":
                 image_bytes, content_type = download_commons_image(photo["url"])
-                alt_text = photo["artist"]
+                alt_text = query  # descriptive search term reads better as alt text than a photographer's name
             else:
                 image_bytes, content_type = download_pexels_image(photo["url"])
                 alt_text = photo["alt"]
@@ -147,6 +151,7 @@ _BLOCK_PATTERN = re.compile(
     r"|(?P<h3><h3>.*?</h3>)"
     r"|(?P<h2><h2>.*?</h2>)"
     r"|(?P<figure><figure[^>]*>.*?</figure>)"
+    r"|(?P<ol><ol[^>]*>.*?</ol>)"
     r"|(?P<ul><ul[^>]*>.*?</ul>)",
     re.DOTALL,
 )
@@ -176,6 +181,8 @@ def _blockify(content_html, font_size_px):
             parts.append(f'<!-- wp:heading -->\n{m.group("h2")}\n<!-- /wp:heading -->')
         elif m.group("figure"):
             parts.append(f'<!-- wp:image {{"sizeSlug":"large"}} -->\n{m.group("figure")}\n<!-- /wp:image -->')
+        elif m.group("ol"):
+            parts.append(f'<!-- wp:list {{"ordered":true}} -->\n{m.group("ol")}\n<!-- /wp:list -->')
         elif m.group("ul"):
             parts.append(f'<!-- wp:list -->\n{m.group("ul")}\n<!-- /wp:list -->')
 
@@ -183,6 +190,20 @@ def _blockify(content_html, font_size_px):
 
 
 def run():
+    print("Checking connectivity to WordPress...")
+    ok, error = check_connectivity()
+    if not ok:
+        print(f"[fatal] Could not reach the WordPress site before doing any other work: {error}")
+        print("[fatal] A connection that times out (rather than an explicit error "
+              "response) often means something between GitHub Actions and your "
+              "host is silently blocking the request -- e.g. host-level bot/DDoS "
+              "protection rejecting datacenter IP ranges. This has been reported "
+              "on some hosts (including Hostinger) for exactly this kind of "
+              "automated traffic. Retries already happened automatically before "
+              "this message; if it keeps failing across multiple scheduled runs, "
+              "contact your host's support with this specific symptom.")
+        sys.exit(1)
+
     print("Fetching trending topics from competitor feeds...")
     topics = get_trending_topics()
     print(f"Found {len(topics)} candidate topic cluster(s).")
@@ -242,6 +263,13 @@ def run():
                       "Check your provider's dashboard and model name before the next run.")
                 break
             continue
+
+        print("Fact-checking the draft against the source material...")
+        try:
+            article = verify_and_refine(article, topic)
+        except Exception as e:
+            print(f"[warn] Fact-check pass raised an unexpected error ({e}); "
+                  "publishing the original draft unchanged.")
 
         # Add a couple of internal links for SEO if related posts exist
         related = search_related_posts(article.get("focus_keyword", headline))
