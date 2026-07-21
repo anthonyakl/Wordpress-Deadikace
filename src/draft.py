@@ -13,6 +13,7 @@ Uses an LLM (Claude or Gemini, whichever is configured) to:
 """
 
 import json
+import re
 
 from config import (
     LLM_PROVIDER,
@@ -40,6 +41,29 @@ outlets' coverage as their source material.
    sounding detail. Do not add speculative framing, dramatic
    interpretation, or editorializing about what something "means" beyond
    what the sources themselves report.
+1a. NEUTRAL FRAMING -- do not upgrade a neutral fact into a more dramatic
+   or interpretive claim. Concretely:
+   - Don't imply an audience's reaction or sentiment ("fans were
+     disappointed by...") unless a source explicitly says the audience
+     reacted that way. If a source says fans were surprised by a specific
+     change (e.g. omitted songs), keep that specific framing rather than
+     substituting a different implied reaction (e.g. don't turn "fans
+     were surprised by omitted songs" into "fans experienced a shorter
+     show," which shifts the claim and implies a negative reaction the
+     source didn't state).
+   - Don't frame a neutral numeric comparison as a deliberate decision
+     unless the source says it was one. "The show ran 90 minutes, down
+     from 120 at the previous stop" is neutral; "marking a deliberate
+     reduction in length" implies intent the source may not support --
+     only use language like that if a source explicitly frames it as a
+     choice.
+   - When a specific stat or ranking is attributed to a named source in
+     the article (e.g. "according to setlist.fm," a chart, a specific
+     report), KEEP that attribution in your own sentence rather than
+     generalizing it into an unqualified claim. "Third-most-played song
+     in the band's catalog, per setlist.fm" is accurate; "third-most-
+     performed song in the band's history" overstates it as an official,
+     universally-tracked ranking.
 2. SYNTHESIZE ACROSS ALL provided sources to build the most complete,
    accurate picture -- don't just rewrite the single source with the most
    detail. Cross-check: if multiple sources report the same fact, that's
@@ -58,6 +82,11 @@ outlets' coverage as their source material.
    not a scene-setting or scene-editorializing opener. A good test: could
    this headline/opening be confirmed as accurate by someone who just
    read the source material? If not, it's too speculative.
+4a. LISTS: if the article includes a setlist, ranking, or any other
+   enumerated set of items (song titles, album tracklist, etc.), format
+   it as a proper HTML list -- <ol><li>Song One</li><li>Song Two</li>...
+   </ol> for a setlist (order matters) or <ul> for an unordered list --
+   never as a run-together comma-separated list inside a <p>.
 5. Include image placeholders in content_html: put <!--IMAGE_1--> right
    after the article's opening paragraph (this becomes both the featured
    image and the first in-article image), then <!--IMAGE_2-->,
@@ -65,9 +94,13 @@ outlets' coverage as their source material.
    Use 2-4 placeholders total depending on article length (short article:
    2, long article: up to 4). For each placeholder, provide a matching
    entry in "image_queries", in the same order. Each query should name
-   the SPECIFIC band/artist/album relevant to that part of the article
-   (e.g. "Metallica live concert", "Ozzy Osbourne portrait", "Master of
-   Puppets album art") -- the system will first search for a real,
+   the SPECIFIC band/artist relevant to that part of the article (e.g.
+   "Metallica live concert", "Ozzy Osbourne portrait", "Master of
+   Puppets album art") -- PREFER the band/artist over a venue name even
+   in sections about a specific show or venue (e.g. use "Bon Jovi live
+   concert" rather than "Madison Square Garden," since venue photos tend
+   to be architecture/exterior shots that are a weaker fit than a band
+   photo) -- the system will first search for a real,
    properly-licensed photo of that exact subject, and automatically fall
    back to a generic music-themed stock photo only if none is found. Keep
    each query concise (3-6 words).
@@ -186,9 +219,7 @@ def filter_rock_relevant_topics(topics):
     return filtered
 
 
-def draft_article(topic):
-    """topic: one cluster dict from discover.get_trending_topics(), ideally
-    already enriched with full_text via article_fetch.enrich_topic_with_full_text"""
+def _build_source_material(topic):
     source_blocks = []
     full_text_count = 0
     for item in topic["items"]:
@@ -208,8 +239,13 @@ def draft_article(topic):
                 f"Summary: {item['summary']}\n"
                 f"Link: {item['link']}"
             )
+    return "\n\n".join(source_blocks), full_text_count
 
-    source_material = "\n\n".join(source_blocks)
+
+def draft_article(topic):
+    """topic: one cluster dict from discover.get_trending_topics(), ideally
+    already enriched with full_text via article_fetch.enrich_topic_with_full_text"""
+    source_material, full_text_count = _build_source_material(topic)
     user_prompt = (
         f"Topic covered by {topic['source_count']} outlet(s), "
         f"{full_text_count} with full article text retrieved:\n\n"
@@ -226,4 +262,80 @@ def draft_article(topic):
     except json.JSONDecodeError as e:
         raise ValueError(f"{LLM_PROVIDER} did not return valid JSON: {e}\nRaw output:\n{raw_text}")
 
+    return article
+
+
+VERIFY_SYSTEM_PROMPT = """You are a copy editor fact-checking a draft news
+article against its source material, for a rock music blog called
+Deadikace.
+
+You will be given the draft article's HTML content and the original
+source material it was based on. Check every specific claim, framing
+choice, and implied reaction in the draft against the sources:
+
+- Flag and fix any claim (date, number, quote, attribution, or implied
+  reaction/sentiment) that isn't clearly supported by the sources.
+- Flag and fix any place where a neutral fact from the sources was
+  reframed as more dramatic, interpretive, or emotionally loaded than the
+  sources themselves state (e.g. a neutral numeric comparison reframed as
+  a deliberate decision; a specific stated reaction swapped for a
+  different implied one).
+- Flag and fix any stat/ranking that dropped its source attribution
+  (e.g. "third-most-played... per setlist.fm" turned into an unqualified
+  claim).
+- Do NOT rewrite anything else -- keep sentences that are already
+  accurate exactly as they are. Make the smallest edit that fixes each
+  issue, not a full rewrite.
+- Preserve every <!--IMAGE_N--> placeholder EXACTLY where it is, and
+  preserve the overall HTML structure (headings, lists, paragraphs).
+
+Respond with ONLY this JSON, nothing else:
+{
+  "content_html": "the corrected HTML (or unchanged, if no issues found)",
+  "issues_found": ["short plain-English description of each fix made -- empty array if none"]
+}
+"""
+
+
+def verify_and_refine(article, topic):
+    """
+    Second pass: re-checks the drafted article against the same source
+    material and tightens up any embellishment/over-interpretation before
+    publishing. Falls back to the original article unchanged if the
+    verification call fails, or if it would have removed/altered the
+    image placeholders (a sign something went wrong with the edit).
+    """
+    source_material, _ = _build_source_material(topic)
+    placeholders_before = set(re.findall(r"<!--IMAGE_\d+-->", article["content_html"]))
+
+    user_prompt = (
+        f"Source material:\n\n{source_material}\n\n"
+        f"Draft article content_html:\n\n{article['content_html']}\n\n"
+        "Fact-check and return the corrected JSON now."
+    )
+
+    try:
+        raw_text = _call_llm(VERIFY_SYSTEM_PROMPT, user_prompt, max_tokens=4000)
+        raw_text = _clean_json_text(raw_text)
+        result = json.loads(raw_text)
+        corrected_html = result["content_html"]
+    except Exception as e:
+        print(f"[warn] Fact-check pass failed ({e}); publishing the original draft unchanged.")
+        return article
+
+    placeholders_after = set(re.findall(r"<!--IMAGE_\d+-->", corrected_html))
+    if placeholders_after != placeholders_before:
+        print("[warn] Fact-check pass altered the image placeholders unexpectedly; "
+              "keeping the original draft instead to avoid breaking image insertion.")
+        return article
+
+    issues = result.get("issues_found") or []
+    if issues:
+        print(f"[info] Fact-check pass made {len(issues)} correction(s):")
+        for issue in issues:
+            print(f"  - {issue}")
+    else:
+        print("[info] Fact-check pass found no issues.")
+
+    article["content_html"] = corrected_html
     return article
