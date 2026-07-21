@@ -6,7 +6,9 @@ Docs: https://developer.wordpress.org/rest-api/
 import re
 
 import requests
+from requests.adapters import HTTPAdapter
 from requests.auth import HTTPBasicAuth
+from urllib3.util.retry import Retry
 
 from config import (
     WP_BASE_URL, WP_USERNAME, WP_APP_PASSWORD, POST_STATUS,
@@ -15,15 +17,46 @@ from config import (
 
 API_ROOT = f"{WP_BASE_URL.rstrip('/')}/wp-json/wp/v2"
 AUTH = HTTPBasicAuth(WP_USERNAME, WP_APP_PASSWORD)
+REQUEST_TIMEOUT = 45
+
+# Some hosts (Hostinger included) have bot/DDoS protection layers that
+# occasionally drop a connection attempt from a datacenter IP like GitHub
+# Actions' without it being a persistent block -- retrying with backoff
+# lets a transient blip resolve itself instead of failing the whole run.
+_retry = Retry(
+    total=4, connect=4, read=2,
+    backoff_factor=8,  # 8s, 16s, 32s, 64s between attempts
+    status_forcelist=(500, 502, 503, 504),
+    allowed_methods=("GET", "POST"),
+)
+_session = requests.Session()
+_session.mount("https://", HTTPAdapter(max_retries=_retry))
+_session.mount("http://", HTTPAdapter(max_retries=_retry))
+
+
+def check_connectivity():
+    """
+    Quick reachability check against the WP REST API root, meant to be
+    called first thing in a run so a persistent connectivity problem
+    (e.g. host-level bot protection blocking GitHub Actions' IPs) fails
+    fast with a clear message, rather than after burning LLM API quota on
+    the discovery/relevance steps first.
+    """
+    try:
+        resp = _session.get(f"{WP_BASE_URL.rstrip('/')}/wp-json/", timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
+        return True, None
+    except requests.RequestException as e:
+        return False, str(e)
 
 
 def get_recent_post_titles(per_page=50):
     """Fetch recent post titles to avoid writing duplicate articles."""
-    resp = requests.get(
+    resp = _session.get(
         f"{API_ROOT}/posts",
         params={"per_page": per_page, "_fields": "title,link"},
         auth=AUTH,
-        timeout=30,
+        timeout=REQUEST_TIMEOUT,
     )
     resp.raise_for_status()
     return [p["title"]["rendered"] for p in resp.json()]
@@ -31,7 +64,7 @@ def get_recent_post_titles(per_page=50):
 
 def get_latest_posts(limit=5):
     """Used to build the 'Latest Posts' block appended to new articles."""
-    resp = requests.get(
+    resp = _session.get(
         f"{API_ROOT}/posts",
         params={"per_page": limit, "_fields": "title,link", "orderby": "date", "order": "desc"},
         auth=AUTH,
@@ -42,13 +75,13 @@ def get_latest_posts(limit=5):
 
 
 def get_or_create_tag(name):
-    resp = requests.get(f"{API_ROOT}/tags", params={"search": name}, auth=AUTH, timeout=30)
+    resp = _session.get(f"{API_ROOT}/tags", params={"search": name}, auth=AUTH, timeout=30)
     resp.raise_for_status()
     matches = resp.json()
     if matches:
         return matches[0]["id"]
 
-    create = requests.post(f"{API_ROOT}/tags", json={"name": name}, auth=AUTH, timeout=30)
+    create = _session.post(f"{API_ROOT}/tags", json={"name": name}, auth=AUTH, timeout=30)
     create.raise_for_status()
     return create.json()["id"]
 
@@ -58,7 +91,7 @@ def get_or_create_category(name):
         raise ValueError("get_or_create_category() called with an empty category name -- "
                           "refusing to guess a category rather than risk picking the wrong one.")
 
-    resp = requests.get(f"{API_ROOT}/categories", params={"search": name}, auth=AUTH, timeout=30)
+    resp = _session.get(f"{API_ROOT}/categories", params={"search": name}, auth=AUTH, timeout=30)
     resp.raise_for_status()
     matches = resp.json()
 
@@ -70,14 +103,14 @@ def get_or_create_category(name):
         if m["name"].strip().lower() == name.strip().lower():
             return m["id"]
 
-    create = requests.post(f"{API_ROOT}/categories", json={"name": name}, auth=AUTH, timeout=30)
+    create = _session.post(f"{API_ROOT}/categories", json={"name": name}, auth=AUTH, timeout=30)
     create.raise_for_status()
     return create.json()["id"]
 
 
 def search_related_posts(keyword, limit=3):
     """Used for internal linking suggestions."""
-    resp = requests.get(
+    resp = _session.get(
         f"{API_ROOT}/posts",
         params={"search": keyword, "per_page": limit, "_fields": "title,link"},
         auth=AUTH,
@@ -107,7 +140,7 @@ def upload_media(image_bytes, filename, alt_text="", content_type="image/jpeg"):
         "Content-Type": content_type,
     }
 
-    resp = requests.post(
+    resp = _session.post(
         f"{API_ROOT}/media",
         headers=headers,
         data=image_bytes,
@@ -121,7 +154,7 @@ def upload_media(image_bytes, filename, alt_text="", content_type="image/jpeg"):
         # Alt text has to be set via a follow-up PATCH -- the upload
         # endpoint doesn't accept it directly.
         try:
-            requests.post(
+            _session.post(
                 f"{API_ROOT}/media/{media['id']}",
                 json={"alt_text": alt_text[:250]},
                 auth=AUTH,
@@ -159,6 +192,6 @@ def create_post(article, category_id=None, featured_media_id=None):
     if featured_media_id:
         payload["featured_media"] = featured_media_id
 
-    resp = requests.post(f"{API_ROOT}/posts", json=payload, auth=AUTH, timeout=60)
+    resp = _session.post(f"{API_ROOT}/posts", json=payload, auth=AUTH, timeout=60)
     resp.raise_for_status()
     return resp.json()
