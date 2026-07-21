@@ -63,7 +63,15 @@ _JUNK_INDICATORS = (
     "research station", "survey", "government printing", "topographic",
     "nautical chart", "soil sample", "seismograph", "weather map",
     "geological", "census", "cadastral", "microfiche",
+    "hearing", "senate", "committee on", "judiciary", "testimony",
+    "legislative", "congressional record", "committee print",
+    "government publishing office", "public law", "bill (legislation)",
+    "act of congress", "statute",
 )
+
+
+def _is_junk_content(combined_text_lower):
+    return any(indicator in combined_text_lower for indicator in _JUNK_INDICATORS)
 
 
 def extract_primary_subject(query):
@@ -80,7 +88,16 @@ def extract_primary_subject(query):
 
 
 def _file_info_from_commons(file_title):
-    """Looks up license/artist metadata for a specific File: page on Commons."""
+    """
+    Looks up license/artist/description metadata for a specific File:
+    page on Commons. Applies the same junk-content check tier 2 (keyword
+    search) uses -- this closes a gap where tier 1 (Wikipedia page image)
+    used to trust whatever image a resolved Wikipedia page happened to
+    have, with no relevance/content filtering at all. A Wikipedia page
+    about a historical event (e.g. a band's Senate testimony) can have a
+    document scan as its own page image, which is a poor fit for a music
+    article even though the page itself is topically related.
+    """
     try:
         resp = requests.get(
             COMMONS_API,
@@ -107,9 +124,17 @@ def _file_info_from_commons(file_title):
         if not _license_is_allowed(license_short):
             return None
 
+        page_title = page.get("title", "")
         artist = _strip_html(extmeta.get("Artist", {}).get("value", "")) or "Unknown"
+        description = _strip_html(extmeta.get("ImageDescription", {}).get("value", ""))
+        categories = _strip_html(extmeta.get("Categories", {}).get("value", ""))
+        combined = f"{page_title} {description} {artist} {categories}".lower()
+
+        if _is_junk_content(combined):
+            return None
+
         license_url = extmeta.get("LicenseUrl", {}).get("value", "")
-        page_url = "https://commons.wikimedia.org/wiki/" + page.get("title", "").replace(" ", "_")
+        page_url = "https://commons.wikimedia.org/wiki/" + page_title.replace(" ", "_")
         return {
             "url": info.get("thumburl") or info.get("url"),
             "artist": artist,
@@ -206,7 +231,7 @@ def _commons_search(query, min_width=800):
 
         # Reject known non-photo archival junk (scanned reports, textile
         # swatches, survey maps, etc.) regardless of any keyword overlap.
-        if any(indicator in combined for indicator in _JUNK_INDICATORS):
+        if _is_junk_content(combined):
             continue
 
         # Relevance check: if the query has a clear proper-noun subject
