@@ -237,16 +237,29 @@ def _commons_search(query, min_width=800):
     return None
 
 
-def find_real_photo(query):
+def find_real_photo(query, exclude_urls=None):
     """
     Main entry point. Returns a dict with url/artist/license_name/
     license_url/page_url for the best real, properly-licensed match, or
     None if nothing suitable was found by either strategy.
+
+    exclude_urls: an optional set of image URLs to treat as already used
+    (e.g. within the same article) -- a candidate matching one of these
+    is skipped in favor of trying the next strategy, since the same band
+    queried twice would otherwise deterministically return the exact same
+    Wikipedia infobox photo both times.
     """
+    exclude_urls = exclude_urls or set()
+
     photo = _wikipedia_page_image(query)
-    if photo:
+    if photo and photo["url"] not in exclude_urls:
         return photo
-    return _commons_search(query)
+
+    photo = _commons_search(query)
+    if photo and photo["url"] not in exclude_urls:
+        return photo
+
+    return None
 
 
 def download_image(url):
