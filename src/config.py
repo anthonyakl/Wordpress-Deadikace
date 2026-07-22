@@ -126,7 +126,7 @@ LATEST_POSTS_COUNT = _env_int("LATEST_POSTS_COUNT", 5)
 # per-paragraph as a real block attribute so it reads comfortably
 # regardless of the theme's default, while staying editable in the block
 # editor. Adjust if it looks too big/small on your theme.
-ARTICLE_FONT_SIZE_PX = _env_int("ARTICLE_FONT_SIZE_PX", 18)
+ARTICLE_FONT_SIZE_PX = _env_int("ARTICLE_FONT_SIZE_PX", 22)
 
 # --- Competitor RSS feeds ---
 # These are used ONLY to detect trending topics (titles/summaries/links).
@@ -136,6 +136,8 @@ COMPETITOR_FEEDS = [
     {"name": "Louder Sound", "url": "https://www.loudersound.com/feeds.xml"},
     {"name": "Ultimate Classic Rock", "url": "https://ultimateclassicrock.com/feed/"},
     {"name": "Loudwire", "url": "https://loudwire.com/feed/"},
+    {"name": "Far Out Magazine", "url": "https://faroutmagazine.co.uk/articles/music/music-news/feed/"},
+    {"name": "Rock Cellar Magazine", "url": "https://rockcellarmagazine.com/category/latest-news/feed/"},
 ]
 
 # --- Site voice / editorial guidelines given to Claude ---
