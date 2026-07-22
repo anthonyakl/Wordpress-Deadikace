@@ -141,6 +141,8 @@ def _file_info_from_commons(file_title):
             "license_name": license_short,
             "license_url": license_url,
             "page_url": page_url,
+            "width": info.get("width"),
+            "height": info.get("height"),
         }
     return None
 
@@ -257,6 +259,7 @@ def _commons_search(query, min_width=800):
         return {
             "url": thumb_url, "artist": artist, "license_name": license_short,
             "license_url": license_url, "page_url": page_url,
+            "width": info.get("width"), "height": info.get("height"),
         }
 
     return None
