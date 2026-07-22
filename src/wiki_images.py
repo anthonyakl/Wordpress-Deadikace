@@ -32,6 +32,8 @@ WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"
 WIKIPEDIA_SUMMARY = "https://en.wikipedia.org/api/rest_v1/page/summary/"
 USER_AGENT = "DeadikaceAgent/1.0 (https://www.deadikace.com)"
 
+MIN_IMAGE_WIDTH = 800
+
 _ALLOWED_PREFIXES = ("CC0", "PUBLIC DOMAIN", "PD", "CC BY", "CC-BY")
 
 
@@ -178,6 +180,8 @@ def _wikipedia_page_image(query):
     image_url = image_info["source"]
     if image_url.lower().endswith(".svg"):
         return None  # skip logos/icons
+    if image_info.get("width", 0) < MIN_IMAGE_WIDTH:
+        return None  # too small to be a good featured/in-article image
 
     # Derive the Commons "File:" title from the image URL so we can look
     # up its real license -- handles both direct and /thumb/ URLs.
@@ -189,7 +193,7 @@ def _wikipedia_page_image(query):
     return _file_info_from_commons(f"File:{filename}")
 
 
-def _commons_search(query, min_width=800):
+def _commons_search(query, min_width=MIN_IMAGE_WIDTH):
     """Tier 2 fallback: keyword search, filtered for actual title relevance."""
     try:
         resp = requests.get(
