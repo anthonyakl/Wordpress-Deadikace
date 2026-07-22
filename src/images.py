@@ -47,6 +47,8 @@ def search_image(query):
         "photographer": photo.get("photographer", "Pexels"),
         "photographer_url": photo.get("photographer_url", "https://www.pexels.com"),
         "alt": photo.get("alt") or query,
+        "width": photo.get("width"),
+        "height": photo.get("height"),
     }
 
 
