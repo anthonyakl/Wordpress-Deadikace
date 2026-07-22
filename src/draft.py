@@ -314,6 +314,12 @@ GENERAL RULES FOR BOTH PASSES:
 - Do NOT rewrite anything that isn't actually a problem -- keep sentences
   that are already accurate and well-formed exactly as they are. Make the
   smallest edit that fixes each issue, not a full rewrite.
+- Do NOT shorten the article or remove factual content while fixing
+  readability issues. Adding subheadings and splitting long sentences
+  should reorganize/reformat the existing content, not condense it -- the
+  corrected version should be roughly the same length as the draft (or
+  slightly longer, since splitting a sentence adds a few words), never
+  noticeably shorter.
 - Preserve every <!--IMAGE_N--> placeholder EXACTLY where it is in the
   content (inserting a new <h2> near one is fine, just don't remove or
   move the placeholder itself).
@@ -356,6 +362,19 @@ def verify_and_refine(article, topic):
     if placeholders_after != placeholders_before:
         print("[warn] Fact-check pass altered the image placeholders unexpectedly; "
               "keeping the original draft instead to avoid breaking image insertion.")
+        return article
+
+    def _word_count(html_str):
+        text_only = re.sub(r"<[^>]+>", " ", html_str)
+        return len(text_only.split())
+
+    words_before = _word_count(article["content_html"])
+    words_after = _word_count(corrected_html)
+    if words_before > 0 and words_after < words_before * 0.8:
+        print(f"[warn] Fact-check pass shrank the article significantly "
+              f"({words_before} -> {words_after} words); keeping the original "
+              f"draft instead, since readability fixes should reorganize "
+              f"content, not cut it.")
         return article
 
     issues = result.get("issues_found") or []
