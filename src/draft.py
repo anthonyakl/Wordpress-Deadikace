@@ -87,6 +87,19 @@ outlets' coverage as their source material.
    it as a proper HTML list -- <ol><li>Song One</li><li>Song Two</li>...
    </ol> for a setlist (order matters) or <ul> for an unordered list --
    never as a run-together comma-separated list inside a <p>.
+4b. READABILITY -- SUBHEADINGS: if the article is longer than ~300 words,
+   it MUST include at least one <h2> subheading within the first ~300
+   words, and roughly one <h2> every 250-350 words after that. Do not let
+   a long, unbroken run of paragraphs sit under only the title. Subheads
+   should be genuine section breaks (a new angle, a new fact cluster, a
+   quote section) not decorative -- and skip them entirely for short
+   articles (under ~300 words), which don't need any.
+4c. READABILITY -- SENTENCE LENGTH: keep the large majority of sentences
+   at 20 words or fewer. If a sentence runs longer, check whether it's
+   really two ideas joined together -- if so, split it into two
+   sentences. A few longer sentences are fine for natural variety, but
+   they should be a small minority (well under a quarter of all
+   sentences), not close to half.
 5. Include image placeholders in content_html: put <!--IMAGE_1--> right
    after the article's opening paragraph (this becomes both the featured
    image and the first in-article image), then <!--IMAGE_2-->,
@@ -265,14 +278,15 @@ def draft_article(topic):
     return article
 
 
-VERIFY_SYSTEM_PROMPT = """You are a copy editor fact-checking a draft news
-article against its source material, for a rock music blog called
-Deadikace.
+VERIFY_SYSTEM_PROMPT = """You are a copy editor fact-checking AND
+readability-editing a draft news article against its source material,
+for a rock music blog called Deadikace.
 
 You will be given the draft article's HTML content and the original
-source material it was based on. Check every specific claim, framing
-choice, and implied reaction in the draft against the sources:
+source material it was based on. Do two passes over it:
 
+PASS 1 -- FACTUAL ACCURACY. Check every specific claim, framing choice,
+and implied reaction in the draft against the sources:
 - Flag and fix any claim (date, number, quote, attribution, or implied
   reaction/sentiment) that isn't clearly supported by the sources.
 - Flag and fix any place where a neutral fact from the sources was
@@ -283,11 +297,26 @@ choice, and implied reaction in the draft against the sources:
 - Flag and fix any stat/ranking that dropped its source attribution
   (e.g. "third-most-played... per setlist.fm" turned into an unqualified
   claim).
-- Do NOT rewrite anything else -- keep sentences that are already
-  accurate exactly as they are. Make the smallest edit that fixes each
-  issue, not a full rewrite.
-- Preserve every <!--IMAGE_N--> placeholder EXACTLY where it is, and
-  preserve the overall HTML structure (headings, lists, paragraphs).
+
+PASS 2 -- READABILITY. Check the draft against these rules and fix any
+that are violated:
+- If the article is longer than ~300 words, it must have at least one
+  <h2> subheading within the first ~300 words, and roughly one <h2>
+  every 250-350 words after that. If a long article has few or no
+  subheadings, insert natural section breaks (<h2>) at sensible points
+  -- don't force one into a short article under ~300 words.
+- The large majority of sentences should be 20 words or fewer. If you
+  find many sentences over 20 words (more than roughly a quarter of all
+  sentences), split some of the longest/most complex ones into two
+  clearer sentences without changing their meaning or dropping content.
+
+GENERAL RULES FOR BOTH PASSES:
+- Do NOT rewrite anything that isn't actually a problem -- keep sentences
+  that are already accurate and well-formed exactly as they are. Make the
+  smallest edit that fixes each issue, not a full rewrite.
+- Preserve every <!--IMAGE_N--> placeholder EXACTLY where it is in the
+  content (inserting a new <h2> near one is fine, just don't remove or
+  move the placeholder itself).
 
 Respond with ONLY this JSON, nothing else:
 {
