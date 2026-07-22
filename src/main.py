@@ -9,7 +9,7 @@ import html
 import re
 import io
 
-from PIL import Image
+from PIL import Image, ImageStat
 
 from config import (
     MAX_ARTICLES_PER_RUN, POST_STATUS, TARGET_CATEGORY, LATEST_POSTS_COUNT,
@@ -90,6 +90,32 @@ def _select_featured_image(processed_images, article_title):
     return None
 
 
+def _image_quality_ok(image_bytes, min_brightness=40, min_contrast=15):
+    """
+    Rejects images that are technically large enough but visually poor --
+    e.g. a dark, distant concert photo where the subject is barely
+    visible. Resolution alone doesn't catch this (a photo can be 1600px
+    wide and still be mostly black). Checks average brightness and
+    contrast on a downsized grayscale copy for speed.
+    Fails open (returns True) if the image can't be analyzed, since a
+    check that can't run shouldn't block an otherwise-fine image.
+    """
+    try:
+        img = Image.open(io.BytesIO(image_bytes)).convert("L")
+        img.thumbnail((300, 300))
+        stat = ImageStat.Stat(img)
+        mean_brightness = stat.mean[0]
+        contrast = stat.stddev[0]
+    except Exception:
+        return True, None
+
+    if mean_brightness < min_brightness:
+        return False, f"too dark (avg brightness {mean_brightness:.0f}/255)"
+    if contrast < min_contrast:
+        return False, f"too flat/low-detail (contrast {contrast:.0f})"
+    return True, None
+
+
 def _process_images(article):
     """
     Finds, downloads, and uploads an image for each IMAGE placeholder in
@@ -111,41 +137,58 @@ def _process_images(article):
         if placeholder not in content:
             continue
 
-        source = None
-        photo = find_real_photo(query, exclude_urls=used_urls)
+        # Gather candidates in preference order: Commons (full query),
+        # Commons (simplified subject-only query), then Pexels. Each is
+        # downloaded and quality-checked in turn -- a poor-quality image
+        # (e.g. dark/blurry) is rejected in favor of the next candidate
+        # rather than accepted just because it was the first match.
+        candidates = []
+        commons_photo = find_real_photo(query, exclude_urls=used_urls)
+        if commons_photo:
+            candidates.append(("commons", commons_photo))
 
-        # If the full query found nothing, retry with just the leading
-        # subject name (e.g. "ZZ Top live concert" -> "ZZ Top") -- a
-        # simpler query sometimes succeeds where a more specific one
-        # doesn't have a direct match.
-        if not photo:
-            simplified = extract_primary_subject(query)
-            if simplified and simplified.lower() != query.strip().lower():
-                photo = find_real_photo(simplified, exclude_urls=used_urls)
+        simplified = extract_primary_subject(query)
+        if simplified and simplified.lower() != query.strip().lower():
+            already_seen = {p["url"] for _, p in candidates}
+            commons_photo_2 = find_real_photo(simplified, exclude_urls=used_urls | already_seen)
+            if commons_photo_2:
+                candidates.append(("commons", commons_photo_2))
 
-        if photo:
-            source = "commons"
-        else:
-            pexels_photo = search_pexels_image(query)
-            if pexels_photo and pexels_photo["url"] not in used_urls:
-                photo = pexels_photo
-                source = "pexels"
+        pexels_photo = search_pexels_image(query)
+        if pexels_photo and pexels_photo["url"] not in used_urls:
+            candidates.append(("pexels", pexels_photo))
 
-        if not photo:
-            print(f"[warn] No usable, not-already-used image found for query: '{query}'")
+        accepted = None
+        for source, photo in candidates:
+            if photo["url"] in used_urls:
+                continue
+            try:
+                if source == "commons":
+                    image_bytes, content_type = download_commons_image(photo["url"])
+                else:
+                    image_bytes, content_type = download_pexels_image(photo["url"])
+            except Exception as e:
+                print(f"[warn] Failed to download candidate image for '{query}' ({source}): {e}")
+                continue
+
+            ok, reason = _image_quality_ok(image_bytes)
+            if not ok:
+                print(f"[warn] Rejected low-quality image candidate for '{query}' ({source}): {reason}")
+                continue
+
+            accepted = (source, photo, image_bytes, content_type)
+            break
+
+        if not accepted:
+            print(f"[warn] No usable, good-quality image found for query: '{query}'")
             content = content.replace(placeholder, "")
             continue
 
+        source, photo, image_bytes, content_type = accepted
         used_urls.add(photo["url"])
+        alt_text = query if source == "commons" else photo["alt"]
 
         try:
-            if source == "commons":
-                image_bytes, content_type = download_commons_image(photo["url"])
-                alt_text = query  # descriptive search term reads better as alt text than a photographer's name
-            else:
-                image_bytes, content_type = download_pexels_image(photo["url"])
-                alt_text = photo["alt"]
-
             media = upload_media(
                 image_bytes,
                 filename=f"image-{i}",
@@ -153,7 +196,7 @@ def _process_images(article):
                 content_type=content_type,
             )
         except Exception as e:
-            print(f"[warn] Failed to download/upload image for '{query}' ({source}): {e}")
+            print(f"[warn] Failed to upload image for '{query}' ({source}): {e}")
             content = content.replace(placeholder, "")
             continue
 
