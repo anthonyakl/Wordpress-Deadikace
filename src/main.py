@@ -90,13 +90,17 @@ def _select_featured_image(processed_images, article_title):
     return None
 
 
-def _image_quality_ok(image_bytes, min_brightness=40, min_contrast=15):
+def _image_quality_ok(image_bytes, min_median_brightness=48, max_dark_fraction=0.55, dark_pixel_threshold=40):
     """
     Rejects images that are technically large enough but visually poor --
     e.g. a dark, distant concert photo where the subject is barely
-    visible. Resolution alone doesn't catch this (a photo can be 1600px
-    wide and still be mostly black). Checks average brightness and
-    contrast on a downsized grayscale copy for speed.
+    visible. Deliberately uses MEDIAN brightness and dark-pixel fraction,
+    not the average: a concert photo with bright stage lights or a video
+    screen against an otherwise pitch-black crowd/silhouette can have a
+    perfectly normal AVERAGE brightness (the few very bright pixels pull
+    the mean up) while still being mostly unreadable -- median and
+    dark-fraction are robust to that because they look at how much of the
+    frame is dark, not diluted by a handful of bright highlights.
     Fails open (returns True) if the image can't be analyzed, since a
     check that can't run shouldn't block an otherwise-fine image.
     """
@@ -104,15 +108,19 @@ def _image_quality_ok(image_bytes, min_brightness=40, min_contrast=15):
         img = Image.open(io.BytesIO(image_bytes)).convert("L")
         img.thumbnail((300, 300))
         stat = ImageStat.Stat(img)
-        mean_brightness = stat.mean[0]
-        contrast = stat.stddev[0]
+        median_brightness = stat.median[0]
+        histogram = img.histogram()  # 256 buckets, grayscale
+        total_pixels = sum(histogram) or 1
+        dark_pixels = sum(histogram[:dark_pixel_threshold])
+        dark_fraction = dark_pixels / total_pixels
     except Exception:
         return True, None
 
-    if mean_brightness < min_brightness:
-        return False, f"too dark (avg brightness {mean_brightness:.0f}/255)"
-    if contrast < min_contrast:
-        return False, f"too flat/low-detail (contrast {contrast:.0f})"
+    if median_brightness < min_median_brightness:
+        return False, f"too dark (median brightness {median_brightness:.0f}/255)"
+    if dark_fraction > max_dark_fraction:
+        return False, (f"majority of frame is dark/in shadow "
+                        f"({dark_fraction * 100:.0f}% of pixels below brightness {dark_pixel_threshold})")
     return True, None
 
 
