@@ -7,6 +7,9 @@ import sys
 import time
 import html
 import re
+import io
+
+from PIL import Image
 
 from config import (
     MAX_ARTICLES_PER_RUN, POST_STATUS, TARGET_CATEGORY, LATEST_POSTS_COUNT,
@@ -33,6 +36,60 @@ def _title_already_covered(title, existing_titles):
     return False
 
 
+def _build_collage(bytes_a, bytes_b, target_height=900):
+    """Combines two portrait images side-by-side into one landscape image,
+    for use as a featured image when the article has no landscape photo."""
+    img_a = Image.open(io.BytesIO(bytes_a)).convert("RGB")
+    img_b = Image.open(io.BytesIO(bytes_b)).convert("RGB")
+
+    def _resize_to_height(img, height):
+        w, h = img.size
+        new_w = max(1, round(w * (height / h)))
+        return img.resize((new_w, height))
+
+    img_a = _resize_to_height(img_a, target_height)
+    img_b = _resize_to_height(img_b, target_height)
+
+    collage = Image.new("RGB", (img_a.width + img_b.width, target_height), color=(20, 20, 20))
+    collage.paste(img_a, (0, 0))
+    collage.paste(img_b, (img_a.width, 0))
+
+    buf = io.BytesIO()
+    collage.save(buf, format="JPEG", quality=88)
+    return buf.getvalue()
+
+
+def _select_featured_image(processed_images, article_title):
+    """
+    Picks the featured/thumbnail image from the images already processed
+    for this article. Prefers a landscape image (matches typical theme
+    thumbnail crops much better than portrait); if none exist, builds a
+    horizontal collage from two portrait images instead of using a single
+    portrait image awkwardly cropped by the theme.
+    """
+    landscape = [img for img in processed_images if img["width"] and img["height"]
+                 and img["width"] >= img["height"]]
+    if landscape:
+        return landscape[0]["media_id"]
+
+    portraits = [img for img in processed_images if img["width"] and img["height"]]
+    if len(portraits) >= 2:
+        try:
+            collage_bytes = _build_collage(portraits[0]["image_bytes"], portraits[1]["image_bytes"])
+            collage_media = upload_media(
+                collage_bytes, filename="featured-collage",
+                alt_text=article_title, content_type="image/jpeg",
+            )
+            if collage_media:
+                return collage_media["id"]
+        except Exception as e:
+            print(f"[warn] Failed to build featured-image collage from portrait images: {e}")
+
+    if processed_images:
+        return processed_images[0]["media_id"]
+    return None
+
+
 def _process_images(article):
     """
     Finds, downloads, and uploads an image for each IMAGE placeholder in
@@ -40,14 +97,14 @@ def _process_images(article):
     Tries Wikimedia Commons first (real, properly-licensed photos of the
     actual bands/artists/events), and falls back to a generic Pexels stock
     photo only if no suitable Commons image is found. Returns the id of
-    the first successfully uploaded image (for use as the featured
-    image), or None if none succeeded.
+    the selected featured image (see _select_featured_image), or None if
+    no images succeeded.
     """
     queries = article.get("image_queries", [])
     content = article["content_html"]
-    featured_media_id = None
     any_image_added = False
     used_urls = set()  # prevents the same photo being used twice in one article
+    processed_images = []  # for featured-image selection after the loop
 
     for i, query in enumerate(queries, start=1):
         placeholder = f"<!--IMAGE_{i}-->"
@@ -104,13 +161,23 @@ def _process_images(article):
             content = content.replace(placeholder, "")
             continue
 
-        if featured_media_id is None:
-            featured_media_id = media["id"]
         any_image_added = True
+        processed_images.append({
+            "media_id": media["id"],
+            "width": photo.get("width"),
+            "height": photo.get("height"),
+            "image_bytes": image_bytes,
+        })
 
         if source == "commons":
+            # Prefix the caption with the actual subject's name (e.g. "John
+            # Coltrane, Photo: ...") when we can confidently extract one --
+            # only done for Commons images since those are verified real
+            # photos of the named subject, unlike the generic Pexels fallback.
+            subject = extract_primary_subject(query)
+            subject_prefix = f"{html.escape(subject)}, " if subject else ""
             credit_html = (
-                f'Photo: <a href="{photo["page_url"]}" target="_blank" rel="nofollow noopener">'
+                f'{subject_prefix}Photo: <a href="{photo["page_url"]}" target="_blank" rel="nofollow noopener">'
                 f'{html.escape(photo["artist"])}</a>, licensed '
                 f'<a href="{photo["license_url"]}" target="_blank" rel="nofollow noopener">'
                 f'{html.escape(photo["license_name"])}</a>, via Wikimedia Commons'
@@ -135,7 +202,7 @@ def _process_images(article):
               "a match), and check the warnings above for the specific reason.")
 
     article["content_html"] = content
-    return featured_media_id
+    return _select_featured_image(processed_images, article.get("title", "Deadikace"))
 
 
 def _append_latest_posts_block(article, latest_posts):
