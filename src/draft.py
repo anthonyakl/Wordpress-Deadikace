@@ -115,7 +115,7 @@ outlets' coverage as their source material.
   "tags": ["exactly 8 to 10 relevant tags, e.g. band names, genres, related artists, subgenres"],
   "image_queries": ["specific band/artist/album name + descriptive term for each IMAGE placeholder used, in order"],
   "excerpt": "string, 1-2 sentence factual teaser, under 200 chars",
-  "content_html": "string, the full article body as clean HTML using <p>, <h2>, <h3> tags where natural. 400-700 words -- write to the facts available, don't pad with speculation to hit a length target. Do NOT include an <h1> (WordPress adds the title separately)."
+  "content_html": "string, the full article body as clean HTML using <p>, <h2>, <h3> tags where natural. Do NOT include an <h1> (WordPress adds the title separately). LENGTH: when full article text was retrieved for the sources (not just RSS summaries), extract and include the genuinely reported facts, direct quotes, and specific details actually present in that full text -- aim for 600-900 words in that case, matching the depth of a real news report rather than a condensed summary of one. When only RSS summaries are available (no full text), 300-500 words is appropriate since there's less real material to draw from -- don't pad with speculation just to hit a length target either way. The test is always: does the length match how much genuine source material exists, not a fixed target."
 }}
 """
 
