@@ -193,8 +193,13 @@ def _wikipedia_page_image(query):
     return _file_info_from_commons(f"File:{filename}")
 
 
-def _commons_search(query, min_width=MIN_IMAGE_WIDTH):
-    """Tier 2 fallback: keyword search, filtered for actual title relevance."""
+def _commons_search(query, min_width=MIN_IMAGE_WIDTH, max_results=4):
+    """Tier 2 fallback: keyword search, filtered for actual title relevance.
+    Returns a list of up to max_results candidates (ranked by Commons'
+    own search relevance) instead of just one -- so that if the top
+    candidate later fails a downstream quality check (e.g. too dark),
+    there are real alternate photos of the actual subject to try before
+    falling back to a generic stock photo."""
     try:
         resp = requests.get(
             COMMONS_API,
@@ -208,14 +213,15 @@ def _commons_search(query, min_width=MIN_IMAGE_WIDTH):
         resp.raise_for_status()
     except requests.RequestException as e:
         print(f"[warn] Wikimedia Commons search failed for '{query}': {e}")
-        return None
+        return []
 
     pages = resp.json().get("query", {}).get("pages", {})
     if not pages:
-        return None
+        return []
 
     query_kw = _query_words(query)
     primary_subject = extract_primary_subject(query)
+    results = []
 
     for page in sorted(pages.values(), key=lambda p: p.get("index", 999)):
         imageinfo_list = page.get("imageinfo") or []
@@ -235,16 +241,9 @@ def _commons_search(query, min_width=MIN_IMAGE_WIDTH):
         artist_raw = _strip_html(extmeta.get("Artist", {}).get("value", ""))
         combined = f"{page_title} {description} {artist_raw}".lower()
 
-        # Reject known non-photo archival junk (scanned reports, textile
-        # swatches, survey maps, etc.) regardless of any keyword overlap.
         if _is_junk_content(combined):
             continue
 
-        # Relevance check: if the query has a clear proper-noun subject
-        # (e.g. "ZZ Top"), require it to actually appear -- this is a much
-        # stronger signal than generic word overlap and is what would have
-        # caught an unrelated match. Fall back to word-overlap only when no
-        # such subject phrase could be extracted from the query.
         if primary_subject:
             if primary_subject.lower() not in combined:
                 continue
@@ -260,39 +259,54 @@ def _commons_search(query, min_width=MIN_IMAGE_WIDTH):
         if not thumb_url:
             continue
 
-        return {
+        results.append({
             "url": thumb_url, "artist": artist, "license_name": license_short,
             "license_url": license_url, "page_url": page_url,
             "width": info.get("width"), "height": info.get("height"),
-        }
+        })
+        if len(results) >= max_results:
+            break
 
-    return None
+    return results
 
-
-def find_real_photo(query, exclude_urls=None):
+def find_real_photo(query, exclude_urls=None, max_candidates=4):
     """
-    Main entry point. Returns a dict with url/artist/license_name/
-    license_url/page_url for the best real, properly-licensed match, or
-    None if nothing suitable was found by either strategy.
+    Main entry point. Returns a LIST of dicts (url/artist/license_name/
+    license_url/page_url/width/height) for real, properly-licensed
+    matches, ranked best-first (Wikipedia's own curated page image first,
+    then Commons keyword-search results), or an empty list if nothing
+    suitable was found by either strategy.
+
+    Returning multiple candidates (instead of just the single best match)
+    matters because a downstream image-quality check can reject the top
+    photo (e.g. a too-dark concert shot) -- previously that meant falling
+    straight through to the generic Pexels stock-photo fallback (or no
+    image at all if Pexels isn't configured), even though Commons often
+    has other good, on-topic photos of the same subject further down the
+    results.
 
     exclude_urls: an optional set of image URLs to treat as already used
-    (e.g. within the same article) -- a candidate matching one of these
-    is skipped in favor of trying the next strategy, since the same band
-    queried twice would otherwise deterministically return the exact same
-    Wikipedia infobox photo both times.
+    (e.g. within the same article) -- skipped so the same band queried
+    twice doesn't return the exact same photo both times.
     """
     exclude_urls = exclude_urls or set()
+    candidates = []
+    seen_urls = set()
 
     photo = _wikipedia_page_image(query)
     if photo and photo["url"] not in exclude_urls:
-        return photo
+        candidates.append(photo)
+        seen_urls.add(photo["url"])
 
-    photo = _commons_search(query)
-    if photo and photo["url"] not in exclude_urls:
-        return photo
+    for photo in _commons_search(query, max_results=max_candidates):
+        if len(candidates) >= max_candidates:
+            break
+        if photo["url"] in exclude_urls or photo["url"] in seen_urls:
+            continue
+        candidates.append(photo)
+        seen_urls.add(photo["url"])
 
-    return None
-
+    return candidates
 
 def download_image(url):
     """Returns (bytes, content_type)."""
