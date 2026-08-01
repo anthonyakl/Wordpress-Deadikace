@@ -16,7 +16,7 @@ from config import (
     ARTICLE_FONT_SIZE_PX,
 )
 from discover import get_trending_topics
-from draft import draft_article, filter_rock_relevant_topics, verify_and_refine
+from draft import draft_article, filter_rock_relevant_topics, filter_duplicate_topics, verify_and_refine
 from article_fetch import enrich_topic_with_full_text
 from wordpress import (
     get_recent_post_titles, get_latest_posts, get_or_create_category,
@@ -145,22 +145,23 @@ def _process_images(article):
         if placeholder not in content:
             continue
 
-        # Gather candidates in preference order: Commons (full query),
-        # Commons (simplified subject-only query), then Pexels. Each is
-        # downloaded and quality-checked in turn -- a poor-quality image
-        # (e.g. dark/blurry) is rejected in favor of the next candidate
-        # rather than accepted just because it was the first match.
+        # Gather candidates in preference order: Commons (full query, may return
+        # several real candidate photos), Commons (simplified subject-only
+        # query), then Pexels. Each candidate is downloaded and
+        # quality-checked in turn -- a poor-quality image (e.g. dark/blurry)
+        # is rejected in favor of the next candidate rather than accepted
+        # just because it was the first match, and trying several real
+        # Commons photos before falling back to Pexels means a single bad
+        # photo doesn't cost the article that image slot entirely.
         candidates = []
-        commons_photo = find_real_photo(query, exclude_urls=used_urls)
-        if commons_photo:
-            candidates.append(("commons", commons_photo))
+        commons_photos = find_real_photo(query, exclude_urls=used_urls)
+        candidates.extend(("commons", p) for p in commons_photos)
 
         simplified = extract_primary_subject(query)
         if simplified and simplified.lower() != query.strip().lower():
-            already_seen = {p["url"] for _, p in candidates}
-            commons_photo_2 = find_real_photo(simplified, exclude_urls=used_urls | already_seen)
-            if commons_photo_2:
-                candidates.append(("commons", commons_photo_2))
+            already_seen = used_urls | {p["url"] for _, p in candidates}
+            commons_photos_2 = find_real_photo(simplified, exclude_urls=already_seen)
+            candidates.extend(("commons", p) for p in commons_photos_2)
 
         pexels_photo = search_pexels_image(query)
         if pexels_photo and pexels_photo["url"] not in used_urls:
@@ -339,6 +340,9 @@ def run():
 
     print("Fetching recent Deadikace posts to avoid duplicates...")
     existing_titles = get_recent_post_titles()
+
+    print("Checking candidate topics against recently published posts to avoid duplicate stories, even if they were covered by a different outlet...")
+    topics = filter_duplicate_topics(topics, existing_titles)
 
     print(f"Resolving target category '{TARGET_CATEGORY}'...")
     category_id = get_or_create_category(TARGET_CATEGORY)
