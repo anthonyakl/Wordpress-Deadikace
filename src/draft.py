@@ -232,6 +232,72 @@ def filter_rock_relevant_topics(topics):
     return filtered
 
 
+DUPLICATE_SYSTEM_PROMPT = """You are an editor for Deadikace, a rock music
+blog, checking new candidate news topics against a list of the blog's own
+recent post titles.
+
+For each numbered candidate topic below, decide whether it is about the
+SAME underlying news story/event as any of the recent post titles -- even
+if the wording is completely different, or the candidate topic was picked
+up from a different outlet than whatever the earlier post was based on.
+The same announcement, event, or quote described in different words by a
+different publication still counts as a duplicate. A different piece of
+news about the same band/artist is NOT a duplicate (e.g. two separate
+posts about two different Metallica news items are both fine).
+
+Respond with ONLY a JSON array of the candidate numbers that ARE
+duplicates of an existing recent post (i.e. should be skipped), e.g.
+[2,5]. Respond with [] if none are duplicates. No other text.
+"""
+
+def filter_duplicate_topics(topics, existing_titles):
+    """
+    Removes candidate topics that are about the same underlying story as
+    a recently-published Deadikace post, even when the wording is
+    completely different or the story was picked up from a different
+    outlet than whichever one the earlier post was drafted from.
+
+    This exists because the cheaper per-topic guard in main.py
+    (_title_already_covered) compares the source RSS headline against the
+    post's own published title -- but that published title is an
+    original, LLM-authored headline, not a copy of the source headline,
+    so genuinely duplicate stories can still slip through if the wording
+    diverges enough. This is a batched LLM call (like
+    filter_rock_relevant_topics above) so it costs one request per run,
+    not one per topic. Falls back to keeping everything if the
+    classification call fails for any reason.
+    """
+    if not topics or not existing_titles:
+        return topics
+
+    candidate_list = "\n".join(
+        f"{i + 1}. " + " / ".join(item["title"] for item in t["items"][:3])
+        for i, t in enumerate(topics)
+    )
+    existing_list = "\n".join(f"- {t}" for t in existing_titles)
+    user_prompt = (
+        f"Recent Deadikace post titles:\n{existing_list}\n\n"
+        f"Candidate topics (each line may list headlines from multiple "
+        f"outlets covering what might be the same candidate story):\n"
+        f"{candidate_list}\n\n"
+        "Return the JSON array of duplicate candidate numbers now."
+    )
+
+    try:
+        raw = _call_llm(DUPLICATE_SYSTEM_PROMPT, user_prompt, max_tokens=1000)
+        raw = _clean_json_text(raw)
+        dup_idx = {int(i) - 1 for i in json.loads(raw)}
+    except Exception as e:
+        print(f"[warn] Duplicate-story filtering failed ({e}); proceeding without it.")
+        return topics
+
+    for i in sorted(dup_idx):
+        if 0 <= i < len(topics):
+            print(f"[info] Skipping likely duplicate of an existing post: "
+                  f"{topics[i]['items'][0]['title']}")
+
+    return [t for i, t in enumerate(topics) if i not in dup_idx]
+
 def _build_source_material(topic):
     source_blocks = []
     full_text_count = 0
