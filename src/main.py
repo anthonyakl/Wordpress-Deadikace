@@ -151,7 +151,7 @@ def run():
             time.sleep(10)  # stay comfortably under free-tier requests-per-minute limits
 
         try:
-            article = draft_article(topic)
+            articles = draft_article(topic)
         except Exception as e:
             error_text = str(e)
             print(f"[error] Failed to draft article for '{headline}': {e}")
@@ -168,38 +168,46 @@ def run():
                 break
             continue
 
-        print("Fact-checking the draft against the source material...")
-        try:
-            article = verify_and_refine(article, topic)
-        except Exception as e:
-            print(f"[warn] Fact-check pass raised an unexpected error ({e}); "
-                  "publishing the original draft unchanged.")
+        if len(articles) > 1:
+            print(f"[info] Topic split into {len(articles)} separate articles "
+                  f"(distinct newsworthy stories detected within one topic cluster).")
 
-        # Add a couple of internal links for SEO if related posts exist
-        related = search_related_posts(article.get("focus_keyword", headline))
-        if related:
-            links_html = "<p>Related reading: " + ", ".join(
-                f'<a href="{r["link"]}">{r["title"]}</a>' for r in related
-            ) + "</p>"
-            article["content_html"] += "\n" + links_html
+        for article in articles:
+            if published_count >= MAX_ARTICLES_PER_RUN:
+                break
 
-        # Image sourcing has been removed -- just strip any leftover
-        # placeholders instead of trying to fill them in.
-        article["content_html"] = _strip_image_placeholders(article["content_html"])
-        featured_media_id = None
+            print("Fact-checking the draft against the source material...")
+            try:
+                article = verify_and_refine(article, topic)
+            except Exception as e:
+                print(f"[warn] Fact-check pass raised an unexpected error ({e}); "
+                      "publishing the original draft unchanged.")
 
-        # Append the "Latest Posts" block
-        _append_latest_posts_block(article, latest_posts)
+            # Add a couple of internal links for SEO if related posts exist
+            related = search_related_posts(article.get("focus_keyword", headline))
+            if related:
+                links_html = "<p>Related reading: " + ", ".join(
+                    f'<a href="{r["link"]}">{r["title"]}</a>' for r in related
+                ) + "</p>"
+                article["content_html"] += "\n" + links_html
 
-        # Convert to real Gutenberg blocks (keeps the post editable in the
-        # block editor) with the medium font size applied per-paragraph
-        article["content_html"] = _blockify(article["content_html"], ARTICLE_FONT_SIZE_PX)
+            # Image sourcing has been removed -- just strip any leftover
+            # placeholders instead of trying to fill them in.
+            article["content_html"] = _strip_image_placeholders(article["content_html"])
+            featured_media_id = None
 
-        try:
-            result = create_post(article, category_id=category_id, featured_media_id=featured_media_id)
-        except Exception as e:
-            print(f"[error] Failed to publish article for '{headline}': {e}")
-            continue
+            # Append the "Latest Posts" block
+            _append_latest_posts_block(article, latest_posts)
+
+            # Convert to real Gutenberg blocks (keeps the post editable in the
+            # block editor) with the medium font size applied per-paragraph
+            article["content_html"] = _blockify(article["content_html"], ARTICLE_FONT_SIZE_PX)
+
+            try:
+                result = create_post(article, category_id=category_id, featured_media_id=featured_media_id)
+            except Exception as e:
+                print(f"[error] Failed to publish article for '{article.get('title', headline)}': {e}")
+                continue
 
         print(f"Created post (status={POST_STATUS}): {result.get('link', result.get('id'))}")
         published_count += 1
