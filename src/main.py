@@ -209,9 +209,9 @@ def run():
                 print(f"[error] Failed to publish article for '{article.get('title', headline)}': {e}")
                 continue
 
-        print(f"Created post (status={POST_STATUS}): {result.get('link', result.get('id'))}")
-        published_count += 1
-        time.sleep(2)  # be polite to the WP API between requests
+            print(f"Created post (status={POST_STATUS}): {result.get('link', result.get('id'))}")
+            published_count += 1
+            time.sleep(2)  # be polite to the WP API between requests, and between multiple articles from one split topic
 
     print(f"Done. Published/drafted {published_count} article(s) this run.")
 
