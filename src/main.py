@@ -13,10 +13,10 @@ from config import (
 )
 from discover import get_trending_topics
 from draft import draft_article, filter_rock_relevant_topics, filter_duplicate_topics, verify_and_refine
-from article_fetch import enrich_topic_with_full_text
+from article_fetch import enrich_topic_with_full_text, download_image_bytes
 from wordpress import (
     get_recent_post_titles, get_latest_posts, get_or_create_category,
-    create_post, search_related_posts, check_connectivity,
+    create_post, search_related_posts, check_connectivity, upload_media,
 )
 
 def _title_already_covered(title, existing_titles):
@@ -41,6 +41,37 @@ def _strip_image_placeholders(content_html):
     for i in range(1, 10):
         content_html = content_html.replace(f"<!--IMAGE_{i}-->", "")
     return content_html
+
+def _get_featured_media_for_topic(topic, article_title):
+    """
+    Downloads the source article's own preview image (og:image) and
+    re-hosts it on Deadikace as the featured image, since automatic
+    image search/download was removed after repeatedly matching the
+    wrong subject. See the IMAGE SOURCING NOTE in article_fetch.py for
+    the copyright tradeoff this involves. Returns a media ID, or None
+    if no source item had a usable image or the download/upload failed.
+    """
+    for item in topic.get("items", []):
+        image_url = item.get("image_url")
+        if not image_url:
+            continue
+        image_bytes, content_type = download_image_bytes(image_url)
+        if not image_bytes:
+            continue
+        try:
+            media = upload_media(
+                image_bytes,
+                filename=article_title,
+                alt_text=f"Photo via {item.get('source', 'source article')}",
+                content_type=content_type,
+            )
+        except Exception as e:
+            print(f"[warn] Failed to upload source image to WordPress media library: {e}")
+            continue
+        if media:
+            print(f"[info] Using source image from {item.get('source', 'source article')} as featured image.")
+            return media["id"]
+    return None
 
 def _append_latest_posts_block(article, latest_posts):
     if not latest_posts:
@@ -191,10 +222,12 @@ def run():
                 ) + "</p>"
                 article["content_html"] += "\n" + links_html
 
-            # Image sourcing has been removed -- just strip any leftover
-            # placeholders instead of trying to fill them in.
+            # Strip any leftover image placeholders the model might still
+            # emit, then try to use the source article's own preview image
+            # as the featured image (see IMAGE SOURCING NOTE in
+            # article_fetch.py for the copyright tradeoff this involves).
             article["content_html"] = _strip_image_placeholders(article["content_html"])
-            featured_media_id = None
+            featured_media_id = _get_featured_media_for_topic(topic, article["title"])
 
             # Append the "Latest Posts" block
             _append_latest_posts_block(article, latest_posts)
