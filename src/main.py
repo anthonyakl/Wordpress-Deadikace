@@ -12,7 +12,7 @@ from config import (
     ARTICLE_FONT_SIZE_PX, ENABLE_SOURCE_IMAGES,
 )
 from discover import get_trending_topics
-from draft import draft_article, filter_rock_relevant_topics, filter_duplicate_topics, verify_and_refine
+from draft import draft_article, filter_rock_relevant_topics, filter_duplicate_topics, dedupe_topics_within_batch, verify_and_refine
 from article_fetch import enrich_topic_with_full_text, download_image_bytes
 from wordpress import (
     get_recent_post_titles, get_latest_posts, get_or_create_category,
@@ -156,6 +156,10 @@ def run():
 
     print("Checking candidate topics against recently published posts to avoid duplicate stories, even if they were covered by a different outlet...")
     topics = filter_duplicate_topics(topics, existing_titles)
+
+    print("Checking candidate topics against each other, in case topic clustering "
+          "missed that two of them are actually the same underlying story...")
+    topics = dedupe_topics_within_batch(topics)
 
     print(f"Resolving target category '{TARGET_CATEGORY}'...")
     category_id = get_or_create_category(TARGET_CATEGORY)
