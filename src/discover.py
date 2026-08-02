@@ -80,6 +80,16 @@ def cluster_topics(entries):
     Groups entries that likely refer to the same story across outlets.
     Uses simple keyword-overlap clustering (no full-text scraping needed) --
     good enough for "same band/event mentioned by multiple outlets."
+
+    Compares each new entry against the UNION of keywords across ALL items
+    already in a cluster (not just the first one added). Comparing only
+    against the founding item was too brittle: two outlets can word the
+    same story differently enough that neither matches the founding
+    headline directly (e.g. one leads with "nearly died", another leads
+    with a specific quote), landing the same story in two separate
+    clusters -- which then get drafted as two duplicate articles, since
+    downstream duplicate checks only compare against already-published
+    posts, not against sibling topics in the same batch.
     """
     clusters = []
 
@@ -94,7 +104,9 @@ def cluster_topics(entries):
         entry_kw = keywords(entry["title"])
         placed = False
         for cluster in clusters:
-            cluster_kw = keywords(cluster["items"][0]["title"])
+            cluster_kw = set()
+            for item in cluster["items"]:
+                cluster_kw |= keywords(item["title"])
             overlap = entry_kw & cluster_kw
             if len(overlap) >= 2:  # at least 2 shared meaningful words
                 cluster["items"].append(entry)
