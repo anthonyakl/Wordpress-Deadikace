@@ -343,6 +343,63 @@ def filter_duplicate_topics(topics, existing_titles):
 
     return [t for i, t in enumerate(topics) if i not in dup_idx]
 
+WITHIN_BATCH_DUPLICATE_SYSTEM_PROMPT = """You are an editor for Deadikace,
+a rock music blog, checking a batch of candidate news topics against EACH
+OTHER (not against older posts) to catch cases where the same underlying
+story was picked up by the topic clustering step as two or more separate
+candidates -- this happens when different outlets word the same story
+differently enough (e.g. one outlet leads with "artist reveals health
+scare", another leads with a specific quote from the same interview) that
+simple keyword-overlap clustering treats them as unrelated.
+
+For each numbered candidate topic below, decide whether it covers the SAME
+underlying news story/event as any EARLIER-numbered candidate in this same
+list. Two candidates about the same band/artist but genuinely different
+news (e.g. a tour announcement and, separately, an album review) are NOT
+duplicates -- only flag candidates that are actually the same story.
+
+Respond with ONLY a JSON array of the candidate numbers that are
+duplicates of an earlier candidate in this list (i.e. should be dropped,
+keeping only the earlier one), e.g. [3,5]. Respond with [] if none are
+duplicates. No other text.
+"""
+
+def dedupe_topics_within_batch(topics):
+    """
+    Catches the case where topic clustering (discover.py) failed to merge
+    two RSS entries about the same underlying story into one cluster --
+    e.g. two different outlets covering the same interview with different
+    enough headlines that keyword-overlap clustering missed the match.
+    Without this, both would be drafted as separate topics and published
+    as duplicate articles in the same run, since the other duplicate
+    guards (_title_already_covered, filter_duplicate_topics) only compare
+    against ALREADY-PUBLISHED posts, not against sibling candidates in the
+    same batch. Falls back to keeping everything if the LLM call fails.
+    """
+    if not topics or len(topics) < 2:
+        return topics
+
+    candidate_list = "\n".join(
+        f"{i + 1}. " + " / ".join(item["title"] for item in t["items"][:3])
+        for i, t in enumerate(topics)
+    )
+    user_prompt = f"Candidate topics:\n{candidate_list}\n\nReturn the JSON array of duplicate candidate numbers now."
+
+    try:
+        raw = _call_llm(WITHIN_BATCH_DUPLICATE_SYSTEM_PROMPT, user_prompt, max_tokens=1000)
+        raw = _clean_json_text(raw)
+        dup_idx = {int(i) - 1 for i in json.loads(raw)}
+    except Exception as e:
+        print(f"[warn] Within-batch duplicate check failed ({e}); proceeding without it.")
+        return topics
+
+    for i in sorted(dup_idx):
+        if 0 <= i < len(topics):
+            print(f"[info] Dropping likely duplicate within this batch (same story as an "
+                  f"earlier candidate): {topics[i]['items'][0]['title']}")
+
+    return [t for i, t in enumerate(topics) if i not in dup_idx]
+
 def _build_source_material(topic):
     source_blocks = []
     full_text_count = 0
