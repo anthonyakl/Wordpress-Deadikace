@@ -164,15 +164,29 @@ skipping topics that look like duplicates of your existing posts.
 
 ## 8. Images
 
-Automatic image sourcing (Wikimedia Commons search + a Pexels stock-photo
-fallback) has been removed. It was matching the wrong subject often enough
-to do more harm than good -- for example, returning a photo of an actual
-eagle for an article about the band Eagles, since a plain name/keyword
-search can't reliably tell a band name apart from an unrelated same-named
-subject. Rather than risk publishing an irrelevant or misleading photo,
-articles are published without inline images for now. If/when a more
-reliable way to source on-topic images is worth revisiting, that can be
-added back as a separate, carefully-tested step.
+Automatic image *search* (Wikimedia Commons keyword search + a Pexels
+stock-photo fallback) was removed after it repeatedly matched the wrong
+subject -- for example, returning a photo of an actual eagle for an
+article about the band Eagles, since a plain name/keyword search can't
+reliably tell a band name apart from an unrelated same-named subject.
+
+In its place, the agent now uses the **source article's own preview
+image** (its `og:image` -- the same photo that outlet's own article uses
+when shared on social media) and re-hosts it as the featured image on
+Deadikace, with alt text crediting the original outlet. This is at least
+topically correct, since it's the outlet's own chosen photo for that
+specific story.
+
+**Important tradeoff to understand:** this is *not* a copyright-clear
+source the way a CC-licensed Wikimedia Commons photo is. Most competitor
+news photos are copyrighted, not freely licensed, so re-hosting them
+carries real legal risk. This was a deliberate choice (image relevance
+over licensing certainty) after weighing both options -- if you'd rather
+have no image than a possibly-copyrighted one, set `ENABLE_SOURCE_IMAGES`
+to `false` as a GitHub Secret (see `src/config.py`) and articles will
+publish without a featured image again, same as before. If a source
+article has no og:image, or the download/upload fails, the article still
+publishes normally without one either way.
 
 ## 9. How off-genre topics get filtered out
 
