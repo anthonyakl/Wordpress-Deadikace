@@ -124,27 +124,21 @@ one — add it directly into GitHub Secrets yourself in the next step.**
 In your repo: **Settings → Secrets and variables → Actions → New repository secret**.
 Add each of these:
 
-| Secret name          | Value                                                                 |
-|-----------------------|------------------------------------------------------------------------|
-| `WP_BASE_URL`         | `https://www.deadikace.com`                                           |
-| `WP_USERNAME`         | your WordPress username                                                |
-| `WP_APP_PASSWORD`     | the Application Password from Step 2 (with spaces)                     |
-| `LLM_PROVIDER`        | `anthropic` or `gemini`                                                |
-| `ANTHROPIC_API_KEY`   | your Claude API key (only needed if `LLM_PROVIDER` is `anthropic`)     |
-| `GEMINI_API_KEY`      | your Gemini API key (only needed if `LLM_PROVIDER` is `gemini`)        |
-| `PEXELS_API_KEY`      | free key from https://www.pexels.com/api/ — used to find article images |
-| `TARGET_CATEGORY`     | exact name of the WP category to file posts under, e.g. `Latest News` |
-| `POST_STATUS`         | `draft` (recommended to start) or `publish`                            |
+| Secret name            | Value                                                                    |
+|-------------------------|--------------------------------------------------------------------------|
+| `WP_BASE_URL`          | `https://www.deadikace.com`                                             |
+| `WP_USERNAME`          | your WordPress username                                                   |
+| `WP_APP_PASSWORD`      | the Application Password from Step 2 (with spaces)                       |
+| `LLM_PROVIDER`         | `anthropic` or `gemini`                                                 |
+| `ANTHROPIC_API_KEY`    | your Claude API key (only needed if `LLM_PROVIDER` is `anthropic`)      |
+| `GEMINI_API_KEY`       | your Gemini API key (only needed if `LLM_PROVIDER` is `gemini`)         |
+| `TARGET_CATEGORY`      | exact name of the WP category to file posts under, e.g. `Latest News`    |
+| `POST_STATUS`          | `draft` (recommended to start) or `publish`                             |
 
 You only need to fill in the API key secret matching whichever
 `LLM_PROVIDER` you chose — the other one can be left blank or omitted.
 Switching providers later is just changing the `LLM_PROVIDER` secret value
 and making sure the matching key is set; no code changes needed.
-
-**Getting a Pexels key**: go to https://www.pexels.com/api/, click
-"Get Started", sign up (free), and copy the API key shown on your
-dashboard. No credit card required, and the free tier (200 requests/hour)
-is far more than this agent needs.
 
 ## 6. Test it before trusting the schedule
 
@@ -168,33 +162,17 @@ frequency — https://crontab.guru is useful for building cron expressions.
 Each run drafts at most `MAX_ARTICLES_PER_RUN` (default 2) new articles,
 skipping topics that look like duplicates of your existing posts.
 
-## 8. How images work
+## 8. Images
 
-Every article gets 2-4 images. For each one, the agent:
-1. Searches **Wikimedia Commons** first for a real, properly-licensed photo
-   of the actual band/artist/album named in the article. Commons hosts
-   photography that photographers have deliberately released under
-   Creative Commons or public-domain licenses -- meaning it's genuinely
-   legal to reuse (including commercially), and the agent only accepts
-   files with an allowed license (CC0, public domain, or CC-BY variants;
-   never non-commercial-only licenses). Every Commons image gets an
-   automatic credit linking the photographer and exact license.
-2. Falls back to a generic **Pexels** stock photo only if no suitable
-   Commons match exists for that specific subject.
-
-**Note on Google Images**: this project deliberately does not scrape
-Google Image Search results. An image showing up in a Google search isn't
-thereby licensed for reuse -- most band/concert photos there belong to
-photographers or agencies who haven't licensed them for republishing, and
-adding a photo credit doesn't fix that; a credit states whose work it is,
-it doesn't grant permission to use it. Wikimedia Commons is the legal
-equivalent: real photos, but restricted to ones explicitly released for
-reuse.
-
-**If no images show up at all**, check the Action run's logs for a
-`[warn]` line — the most common cause is `PEXELS_API_KEY` not being set
-as a GitHub Secret, in which case Commons alone won't always have a match
-for every topic.
+Automatic image sourcing (Wikimedia Commons search + a Pexels stock-photo
+fallback) has been removed. It was matching the wrong subject often enough
+to do more harm than good -- for example, returning a photo of an actual
+eagle for an article about the band Eagles, since a plain name/keyword
+search can't reliably tell a band name apart from an unrelated same-named
+subject. Rather than risk publishing an irrelevant or misleading photo,
+articles are published without inline images for now. If/when a more
+reliable way to source on-topic images is worth revisiting, that can be
+added back as a separate, carefully-tested step.
 
 ## 9. How off-genre topics get filtered out
 
@@ -205,7 +183,6 @@ Baby" or "BTS" doesn't contain the word "rap" or "K-pop" anywhere), so
 the agent sends just the batch of candidate headlines (one call per run,
 not per article) to the configured LLM and asks it to identify which are
 genuinely rock-relevant before drafting begins.
-
 
 ## Tuning knobs (all in `src/config.py` or as GitHub Secrets)
 
