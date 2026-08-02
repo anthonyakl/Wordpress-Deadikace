@@ -6,7 +6,6 @@ never hardcode them here. See .env.example / GitHub Secrets setup in README.
 
 import os
 
-
 def _env(key, default=""):
     """
     Like os.environ.get, but also falls back to `default` when the
@@ -19,7 +18,6 @@ def _env(key, default=""):
     val = os.environ.get(key)
     return val if val not in (None, "") else default
 
-
 def _env_int(key, default):
     val = _env(key, "")
     if val == "":
@@ -30,15 +28,13 @@ def _env_int(key, default):
         print(f"[warn] Env var {key}={val!r} is not a valid integer; using default {default}.")
         return default
 
-
 def _env_list(key, default_csv):
     val = _env(key, default_csv)
     return [item.strip() for item in val.split(",") if item.strip()]
 
-
 # --- WordPress site ---
 WP_BASE_URL = _env("WP_BASE_URL", "https://www.deadikace.com")
-WP_USERNAME = os.environ["WP_USERNAME"]          # your WP username
+WP_USERNAME = os.environ["WP_USERNAME"]  # your WP username
 WP_APP_PASSWORD = os.environ["WP_APP_PASSWORD"]  # WP Application Password (not your login password)
 
 # --- LLM provider selection ---
@@ -105,18 +101,6 @@ EXCLUDE_KEYWORDS = _env_list(
 # The agent will create it if it somehow doesn't exist yet, but it's meant
 # to match one you already have (e.g. "Latest News").
 TARGET_CATEGORY = _env("TARGET_CATEGORY", "Latest News")
-
-# --- Images ---
-# Pexels (https://www.pexels.com/api/) has a generous free tier and a
-# straightforward API -- used to find royalty-free, commercially-usable
-# stock photos relevant to each article. Get a free key at
-# https://www.pexels.com/api/
-PEXELS_API_KEY = _env("PEXELS_API_KEY")
-
-# How many images to request per article (in addition to the featured
-# image). The model is instructed to include this many section images
-# scaled to article length -- this is an upper bound.
-MAX_IMAGES_PER_ARTICLE = _env_int("MAX_IMAGES_PER_ARTICLE", 4)
 
 # --- "Latest posts" block appended to the end of every article ---
 LATEST_POSTS_COUNT = _env_int("LATEST_POSTS_COUNT", 5)
