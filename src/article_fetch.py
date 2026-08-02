@@ -12,6 +12,20 @@ forbids copying phrasing/structure from any fetched source. Facts
 themselves aren't copyrightable -- only the specific expression of them
 is -- which is the same principle any journalist relies on when writing
 a story informed by other outlets' reporting.
+
+IMAGE SOURCING NOTE: automatic image search/download (Wikimedia/Pexels)
+was removed after it repeatedly matched the wrong subject (e.g. a photo
+of an actual eagle for an article about the band Eagles). As a safer
+fallback, this module can pull the source article's own og:image (the
+same "preview" photo used when that article gets shared on social media)
+and Deadikace re-hosts it as the featured image, attributed to the
+original outlet in the alt text. This is at least topically correct,
+since it's the outlet's own chosen photo for that specific story -- but
+it is NOT a copyright-clear image the way a CC-licensed Wikimedia Commons
+photo would be. Most competitor news photos are copyrighted, not freely
+licensed, so re-hosting them carries real legal risk; this is a deliberate
+tradeoff the site owner has chosen (image relevance over image licensing
+certainty) after weighing both options, not a default best practice.
 """
 
 import requests
@@ -19,18 +33,13 @@ import trafilatura
 
 USER_AGENT = "DeadikaceAgent/1.0 (https://www.deadikace.com)"
 
-
 def fetch_article_text(url, max_chars=5000):
     """Returns extracted main article text, or None if fetching/extraction fails."""
-    try:
-        resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=20)
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        print(f"[warn] Failed to fetch {url}: {e}")
+    html = _fetch_html(url)
+    if not html:
         return None
-
     try:
-        text = trafilatura.extract(resp.text, include_comments=False, favor_recall=True)
+        text = trafilatura.extract(html, include_comments=False, favor_recall=True)
     except Exception as e:
         print(f"[warn] Failed to extract article text from {url}: {e}")
         return None
@@ -39,21 +48,79 @@ def fetch_article_text(url, max_chars=5000):
         return None
     return text.strip()[:max_chars]
 
+def _fetch_html(url):
+    try:
+        resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=20)
+        resp.raise_for_status()
+        return resp.text
+    except requests.RequestException as e:
+        print(f"[warn] Failed to fetch {url}: {e}")
+        return None
+
+def fetch_source_image_url(url, html=None):
+    """
+    Returns the source article's og:image URL (the same preview photo used
+    when the article is shared on social media), or None if unavailable.
+    See the IMAGE SOURCING NOTE at the top of this file for the copyright
+    tradeoff this involves -- this is a deliberate, explicitly-requested
+    fallback, not a default recommendation.
+    """
+    if html is None:
+        html = _fetch_html(url)
+    if not html:
+        return None
+    try:
+        metadata = trafilatura.extract_metadata(html)
+    except Exception as e:
+        print(f"[warn] Failed to extract image metadata from {url}: {e}")
+        return None
+    if metadata and metadata.image:
+        return metadata.image
+    return None
+
+def download_image_bytes(image_url, max_bytes=8_000_000):
+    """Downloads an image and returns (bytes, content_type), or (None, None) on failure."""
+    try:
+        resp = requests.get(image_url, headers={"User-Agent": USER_AGENT}, timeout=20, stream=True)
+        resp.raise_for_status()
+        content_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
+        if not content_type.startswith("image/"):
+            print(f"[warn] URL did not return an image content-type ({content_type}): {image_url}")
+            return None, None
+        data = resp.raw.read(max_bytes + 1, decode_content=True)
+        if len(data) > max_bytes:
+            print(f"[warn] Image at {image_url} exceeds {max_bytes} bytes; skipping.")
+            return None, None
+        return data, content_type
+    except requests.RequestException as e:
+        print(f"[warn] Failed to download image {image_url}: {e}")
+        return None, None
 
 def enrich_topic_with_full_text(topic, max_sources=4):
     """
-    Mutates topic['items'] in place, adding a 'full_text' key to up to
-    max_sources of them (the top outlets covering the story). Items that
-    fail to fetch simply keep full_text=None, and drafting falls back to
-    the RSS summary for those.
+    Mutates topic['items'] in place, adding 'full_text' and 'image_url' keys
+    to up to max_sources of them (the top outlets covering the story). Items
+    that fail to fetch simply keep full_text=None/image_url=None, and
+    drafting falls back to the RSS summary for those.
     """
     fetched_count = 0
     for item in topic["items"]:
         if fetched_count >= max_sources:
             item["full_text"] = None
+            item["image_url"] = None
             continue
-        text = fetch_article_text(item["link"])
-        item["full_text"] = text
-        if text:
+        html = _fetch_html(item["link"])
+        if html:
+            try:
+                text = trafilatura.extract(html, include_comments=False, favor_recall=True)
+            except Exception as e:
+                print(f"[warn] Failed to extract article text from {item['link']}: {e}")
+                text = None
+            item["full_text"] = text.strip()[:5000] if text else None
+            item["image_url"] = fetch_source_image_url(item["link"], html=html)
+        else:
+            item["full_text"] = None
+            item["image_url"] = None
+        if item["full_text"]:
             fetched_count += 1
     return topic
