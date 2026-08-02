@@ -33,6 +33,27 @@ is to write a STRAIGHT NEWS REPORT, not an editorial or opinion piece --
 the same way a real reporter would write up a wire story using multiple
 outlets' coverage as their source material.
 
+0. MULTIPLE DISTINCT STORIES -- SPLIT, DON'T MERGE: before writing, check
+   whether the source material actually covers two or more clearly
+   separate, independently newsworthy stories rather than one connected
+   story. This commonly happens with festival coverage, where multiple
+   artists each have their own unrelated news angle (e.g. one artist's
+   onstage mishap or surprise guest, a different artist's setlist or
+   album news) and only share an event/venue/date in common. Two artists
+   appearing at the same festival are NOT one story just because they
+   share an event -- if each has independently newsworthy content (its
+   own quotes, its own noteworthy moment), write them as SEPARATE
+   articles, not one combined piece. A single combined article targets
+   two unrelated search intents at once and weakens both articles' SEO
+   and CTR compared to two focused ones. Only keep multiple
+   artists/subjects in ONE article when they are genuinely part of the
+   SAME story -- a collaboration, a joint announcement, a feud, or one
+   artist's guest appearance as the specific narrative focus of the other
+   artist's news (in that case the guest appearance is a detail within
+   one story, not a second story).
+   When you do split, base EACH article only on the subset of source
+   material that's actually about that story -- do not pad a thin split
+   with details that belong to the other story.
 1. FACTUAL ACCURACY IS THE TOP PRIORITY. Every specific claim -- dates,
    numbers, event names, direct quotes, who-said-what -- must come from
    the provided source material. If a detail isn't in any of the sources,
@@ -70,6 +91,15 @@ outlets' coverage as their source material.
    a signal it's solid; if only one source mentions a specific detail,
    still fine to include it, but don't build the whole article's angle
    around one outlet's framing.
+2a. DON'T BURY OR DROP THE BIGGEST FACT: before finalizing the article,
+    scan all the source material for the single most newsworthy element
+    -- the thing most sources emphasize, or the one with the most news
+    value (an injury or safety incident, a surprise guest, a public
+    dispute, a record broken, a cancellation). If that fact exists in
+    the sources, it must be in the article, and prominently -- not
+    mentioned in passing or left out in favor of less significant
+    details like a full setlist. A setlist is supporting detail; an
+    incident during the show is the story.
 3. Direct quotes from the people involved (band members, reps, etc.) may
    be quoted verbatim with attribution if they appear in the source
    material -- these are factual statements, not the reporting
@@ -78,6 +108,14 @@ outlets' coverage as their source material.
    HOWEVER: do not copy the reporting journalist's own sentences,
    descriptions, structure, or paragraph order from any source. Write
    your own original sentences built from the facts and quotes.
+3a. DON'T INVENT NEAR-QUOTES: if you're describing what someone said or
+    the gist of a remark, make it clearly indirect ("joked that the
+    delay put the show's quality in question") rather than phrasing it
+    as a specific, quotable-sounding turn of phrase that reads like an
+    actual quote. Only use quotation marks around text that is the
+    verbatim wording given in the source material -- never construct a
+    plausible-sounding quote or tighten/punch up a paraphrase until it
+    reads like one.
 4. Lead with the most newsworthy, concrete fact (the "what happened"),
    not a scene-setting or scene-editorializing opener. A good test: could
    this headline/opening be confirmed as accurate by someone who just
@@ -87,6 +125,17 @@ outlets' coverage as their source material.
     it as a proper HTML list -- <ol><li>Song One</li><li>Song Two</li>...
     </ol> for a setlist (order matters) or <ul> for an unordered list --
     never as a run-together comma-separated list inside a <p>.
+4a-i. SETLIST ACCURACY: never construct, complete, or infer a setlist --
+    a specific, ordered list of songs performed is exactly the kind of
+    detail readers expect to be 100% accurate, and getting even one
+    song or the order wrong is a real credibility problem. Only include
+    a setlist (full or partial) if the source material explicitly
+    provides one (e.g. citing Setlist.fm or listing the songs played in
+    order). If the sources only mention a handful of songs performed
+    without a full confirmed list, name those specific songs in prose
+    instead of presenting them as a complete setlist. If no source
+    gives any song-by-song detail, don't include a setlist section at
+    all.
 4b. READABILITY -- SUBHEADINGS: if the article is longer than ~300 words,
     it MUST include at least one <h2> subheading within the first ~300
     words, and roughly one <h2> every 250-350 words after that. Do not let
@@ -113,9 +162,15 @@ outlets' coverage as their source material.
    or a strong direct claim -- without turning into misleading clickbait
    or overstating what the article actually says. Every word in the
    title must still be something the article backs up.
-6. Output must be valid JSON matching this exact schema, and NOTHING else
-   -- no markdown code fences, no preamble, no explanation:
+6. Output must be a valid JSON ARRAY, and NOTHING else -- no markdown code
+   fences, no preamble, no explanation. In the normal case (one story),
+   the array has exactly ONE element. If rule 0 applies (the source
+   material covers multiple distinct newsworthy stories), the array has
+   one element per story, each a fully independent article following
+   every rule above on its own. Each element must match this exact
+   schema:
 
+[
 {{
   "title": "string, accurate and specific, states the actual news or angle, written to be eye-catching and SEO-friendly (see rule 5), under 70 chars",
   "seo_title": "string, SEO title tag, under 60 chars, includes primary keyword",
@@ -125,6 +180,7 @@ outlets' coverage as their source material.
   "excerpt": "string, 1-2 sentence factual teaser, under 200 chars",
   "content_html": "string, the full article body as clean HTML using <p>, <h2>, <h3> tags where natural. Do NOT include an <h1> (WordPress adds the title separately). LENGTH: when full article text was retrieved for the sources (not just RSS summaries), extract and include the genuinely reported facts, direct quotes, and specific details actually present in that full text -- aim for 600-900 words in that case, matching the depth of a real news report rather than a condensed summary of one. When only RSS summaries are available (no full text), 300-500 words is appropriate since there's less real material to draw from -- don't pad with speculation just to hit a length target either way. The test is always: does the length match how much genuine source material exists, not a fixed target."
 }}
+]
 """
 
 RELEVANCE_SYSTEM_PROMPT = """You are a rock music editor triaging news headlines for a rock/metal blog called Deadikace.
@@ -311,25 +367,37 @@ def _build_source_material(topic):
 
 def draft_article(topic):
     """topic: one cluster dict from discover.get_trending_topics(), ideally
-    already enriched with full_text via article_fetch.enrich_topic_with_full_text"""
+    already enriched with full_text via article_fetch.enrich_topic_with_full_text
+
+    Returns a LIST of article dicts -- normally just one, but more than
+    one if the model determined the source material actually covers
+    multiple distinct newsworthy stories (see rule 0 in
+    DRAFT_SYSTEM_PROMPT), e.g. two different artists at the same
+    festival each with their own unrelated news angle."""
     source_material, full_text_count = _build_source_material(topic)
     user_prompt = (
         f"Topic covered by {topic['source_count']} outlet(s), "
         f"{full_text_count} with full article text retrieved:\n\n"
         f"{source_material}\n\n"
-        "Write the Deadikace news report now, synthesizing across all "
-        "sources above. Respond with ONLY the JSON object, no other text."
+        "Write the Deadikace news report(s) now, synthesizing across all "
+        "sources above. Respond with ONLY the JSON array, no other text."
     )
 
     raw_text = _call_llm(DRAFT_SYSTEM_PROMPT, user_prompt, max_tokens=4000)
     raw_text = _clean_json_text(raw_text)
 
     try:
-        article = json.loads(raw_text)
+        articles = json.loads(raw_text)
     except json.JSONDecodeError as e:
         raise ValueError(f"{LLM_PROVIDER} did not return valid JSON: {e}\nRaw output:\n{raw_text}")
 
-    return article
+    if isinstance(articles, dict):
+        articles = [articles]
+
+    if not isinstance(articles, list) or not articles:
+        raise ValueError(f"{LLM_PROVIDER} did not return a non-empty JSON array: {raw_text}")
+
+    return articles
 
 VERIFY_SYSTEM_PROMPT = """You are a copy editor fact-checking AND
 readability-editing a draft news article against its source material,
