@@ -5,11 +5,7 @@ Invoked on a schedule by the GitHub Actions workflow.
 
 import sys
 import time
-import html
 import re
-import io
-
-from PIL import Image, ImageStat
 
 from config import (
     MAX_ARTICLES_PER_RUN, POST_STATUS, TARGET_CATEGORY, LATEST_POSTS_COUNT,
@@ -20,11 +16,8 @@ from draft import draft_article, filter_rock_relevant_topics, filter_duplicate_t
 from article_fetch import enrich_topic_with_full_text
 from wordpress import (
     get_recent_post_titles, get_latest_posts, get_or_create_category,
-    create_post, search_related_posts, upload_media, check_connectivity,
+    create_post, search_related_posts, check_connectivity,
 )
-from images import search_image as search_pexels_image, download_image as download_pexels_image
-from wiki_images import find_real_photo, download_image as download_commons_image, extract_primary_subject
-
 
 def _title_already_covered(title, existing_titles):
     """Very simple duplicate guard based on shared significant words."""
@@ -35,227 +28,19 @@ def _title_already_covered(title, existing_titles):
             return True
     return False
 
-
-def _build_collage(bytes_a, bytes_b, target_height=900):
-    """Combines two portrait images side-by-side into one landscape image,
-    for use as a featured image when the article has no landscape photo."""
-    img_a = Image.open(io.BytesIO(bytes_a)).convert("RGB")
-    img_b = Image.open(io.BytesIO(bytes_b)).convert("RGB")
-
-    def _resize_to_height(img, height):
-        w, h = img.size
-        new_w = max(1, round(w * (height / h)))
-        return img.resize((new_w, height))
-
-    img_a = _resize_to_height(img_a, target_height)
-    img_b = _resize_to_height(img_b, target_height)
-
-    collage = Image.new("RGB", (img_a.width + img_b.width, target_height), color=(20, 20, 20))
-    collage.paste(img_a, (0, 0))
-    collage.paste(img_b, (img_a.width, 0))
-
-    buf = io.BytesIO()
-    collage.save(buf, format="JPEG", quality=88)
-    return buf.getvalue()
-
-
-def _select_featured_image(processed_images, article_title):
+def _strip_image_placeholders(content_html):
     """
-    Picks the featured/thumbnail image from the images already processed
-    for this article. Prefers a landscape image (matches typical theme
-    thumbnail crops much better than portrait); if none exist, builds a
-    horizontal collage from two portrait images instead of using a single
-    portrait image awkwardly cropped by the theme.
+    Image sourcing (Wikimedia Commons search + Pexels stock-photo fallback)
+    has been removed -- it was matching the wrong subject often enough to
+    be worse than no image at all (e.g. returning a photo of an actual
+    eagle for an article about the band Eagles). Rather than re-attempt
+    automatic image sourcing, articles are simply published without
+    inline images for now, so any \`<!--IMAGE_N-->\` placeholder the model
+    still emits is just stripped out.
     """
-    landscape = [img for img in processed_images if img["width"] and img["height"]
-                 and img["width"] >= img["height"]]
-    if landscape:
-        return landscape[0]["media_id"]
-
-    portraits = [img for img in processed_images if img["width"] and img["height"]]
-    if len(portraits) >= 2:
-        try:
-            collage_bytes = _build_collage(portraits[0]["image_bytes"], portraits[1]["image_bytes"])
-            collage_media = upload_media(
-                collage_bytes, filename="featured-collage",
-                alt_text=article_title, content_type="image/jpeg",
-            )
-            if collage_media:
-                return collage_media["id"]
-        except Exception as e:
-            print(f"[warn] Failed to build featured-image collage from portrait images: {e}")
-
-    if processed_images:
-        return processed_images[0]["media_id"]
-    return None
-
-
-def _image_quality_ok(image_bytes, min_median_brightness=48, max_dark_fraction=0.55, dark_pixel_threshold=40):
-    """
-    Rejects images that are technically large enough but visually poor --
-    e.g. a dark, distant concert photo where the subject is barely
-    visible. Deliberately uses MEDIAN brightness and dark-pixel fraction,
-    not the average: a concert photo with bright stage lights or a video
-    screen against an otherwise pitch-black crowd/silhouette can have a
-    perfectly normal AVERAGE brightness (the few very bright pixels pull
-    the mean up) while still being mostly unreadable -- median and
-    dark-fraction are robust to that because they look at how much of the
-    frame is dark, not diluted by a handful of bright highlights.
-    Fails open (returns True) if the image can't be analyzed, since a
-    check that can't run shouldn't block an otherwise-fine image.
-    """
-    try:
-        img = Image.open(io.BytesIO(image_bytes)).convert("L")
-        img.thumbnail((300, 300))
-        stat = ImageStat.Stat(img)
-        median_brightness = stat.median[0]
-        histogram = img.histogram()  # 256 buckets, grayscale
-        total_pixels = sum(histogram) or 1
-        dark_pixels = sum(histogram[:dark_pixel_threshold])
-        dark_fraction = dark_pixels / total_pixels
-    except Exception:
-        return True, None
-
-    if median_brightness < min_median_brightness:
-        return False, f"too dark (median brightness {median_brightness:.0f}/255)"
-    if dark_fraction > max_dark_fraction:
-        return False, (f"majority of frame is dark/in shadow "
-                        f"({dark_fraction * 100:.0f}% of pixels below brightness {dark_pixel_threshold})")
-    return True, None
-
-
-def _process_images(article):
-    """
-    Finds, downloads, and uploads an image for each IMAGE placeholder in
-    content_html, then swaps the placeholders for real <figure> markup.
-    Tries Wikimedia Commons first (real, properly-licensed photos of the
-    actual bands/artists/events), and falls back to a generic Pexels stock
-    photo only if no suitable Commons image is found. Returns the id of
-    the selected featured image (see _select_featured_image), or None if
-    no images succeeded.
-    """
-    queries = article.get("image_queries", [])
-    content = article["content_html"]
-    any_image_added = False
-    used_urls = set()  # prevents the same photo being used twice in one article
-    processed_images = []  # for featured-image selection after the loop
-
-    for i, query in enumerate(queries, start=1):
-        placeholder = f"<!--IMAGE_{i}-->"
-        if placeholder not in content:
-            continue
-
-        # Gather candidates in preference order: Commons (full query, may return
-        # several real candidate photos), Commons (simplified subject-only
-        # query), then Pexels. Each candidate is downloaded and
-        # quality-checked in turn -- a poor-quality image (e.g. dark/blurry)
-        # is rejected in favor of the next candidate rather than accepted
-        # just because it was the first match, and trying several real
-        # Commons photos before falling back to Pexels means a single bad
-        # photo doesn't cost the article that image slot entirely.
-        candidates = []
-        commons_photos = find_real_photo(query, exclude_urls=used_urls)
-        candidates.extend(("commons", p) for p in commons_photos)
-
-        simplified = extract_primary_subject(query)
-        if simplified and simplified.lower() != query.strip().lower():
-            already_seen = used_urls | {p["url"] for _, p in candidates}
-            commons_photos_2 = find_real_photo(simplified, exclude_urls=already_seen)
-            candidates.extend(("commons", p) for p in commons_photos_2)
-
-        pexels_photo = search_pexels_image(query)
-        if pexels_photo and pexels_photo["url"] not in used_urls:
-            candidates.append(("pexels", pexels_photo))
-
-        accepted = None
-        for source, photo in candidates:
-            if photo["url"] in used_urls:
-                continue
-            try:
-                if source == "commons":
-                    image_bytes, content_type = download_commons_image(photo["url"])
-                else:
-                    image_bytes, content_type = download_pexels_image(photo["url"])
-            except Exception as e:
-                print(f"[warn] Failed to download candidate image for '{query}' ({source}): {e}")
-                continue
-
-            ok, reason = _image_quality_ok(image_bytes)
-            if not ok:
-                print(f"[warn] Rejected low-quality image candidate for '{query}' ({source}): {reason}")
-                continue
-
-            accepted = (source, photo, image_bytes, content_type)
-            break
-
-        if not accepted:
-            print(f"[warn] No usable, good-quality image found for query: '{query}'")
-            content = content.replace(placeholder, "")
-            continue
-
-        source, photo, image_bytes, content_type = accepted
-        used_urls.add(photo["url"])
-        alt_text = query if source == "commons" else photo["alt"]
-
-        try:
-            media = upload_media(
-                image_bytes,
-                filename=f"image-{i}",
-                alt_text=alt_text,
-                content_type=content_type,
-            )
-        except Exception as e:
-            print(f"[warn] Failed to upload image for '{query}' ({source}): {e}")
-            content = content.replace(placeholder, "")
-            continue
-
-        if not media:
-            content = content.replace(placeholder, "")
-            continue
-
-        any_image_added = True
-        processed_images.append({
-            "media_id": media["id"],
-            "width": photo.get("width"),
-            "height": photo.get("height"),
-            "image_bytes": image_bytes,
-        })
-
-        if source == "commons":
-            # Prefix the caption with the actual subject's name (e.g. "John
-            # Coltrane, Photo: ...") when we can confidently extract one --
-            # only done for Commons images since those are verified real
-            # photos of the named subject, unlike the generic Pexels fallback.
-            subject = extract_primary_subject(query)
-            subject_prefix = f"{html.escape(subject)}, " if subject else ""
-            credit_html = (
-                f'{subject_prefix}Photo: <a href="{photo["page_url"]}" target="_blank" rel="nofollow noopener">'
-                f'{html.escape(photo["artist"])}</a>, licensed '
-                f'<a href="{photo["license_url"]}" target="_blank" rel="nofollow noopener">'
-                f'{html.escape(photo["license_name"])}</a>, via Wikimedia Commons'
-            )
-        else:
-            credit_html = f'Photo by {html.escape(photo["photographer"])} via Pexels'
-
-        figure_html = (
-            f'<figure class="wp-block-image size-large">'
-            f'<img src="{media["source_url"]}" alt="{html.escape(alt_text)}"/>'
-            f'<figcaption>{credit_html}</figcaption></figure>'
-        )
-        content = content.replace(placeholder, figure_html)
-
-    # Clean up any unused placeholders (e.g. if model included more than it used)
     for i in range(1, 10):
-        content = content.replace(f"<!--IMAGE_{i}-->", "")
-
-    if not any_image_added:
-        print("[warn] No images were added to this article at all. Check that "
-              "PEXELS_API_KEY is set (Wikimedia Commons alone won't always have "
-              "a match), and check the warnings above for the specific reason.")
-
-    article["content_html"] = content
-    return _select_featured_image(processed_images, article.get("title", "Deadikace"))
-
+        content_html = content_html.replace(f"<!--IMAGE_{i}-->", "")
+    return content_html
 
 def _append_latest_posts_block(article, latest_posts):
     if not latest_posts:
@@ -263,7 +48,6 @@ def _append_latest_posts_block(article, latest_posts):
     items = "".join(f'<li><a href="{p["link"]}">{p["title"]}</a></li>' for p in latest_posts)
     block = f'<h2>Latest Posts</h2><ul class="deadikace-latest-posts">{items}</ul>'
     article["content_html"] += "\n" + block
-
 
 _BLOCK_PATTERN = re.compile(
     r"(?P<p><p>.*?</p>)"
@@ -274,7 +58,6 @@ _BLOCK_PATTERN = re.compile(
     r"|(?P<ul><ul[^>]*>.*?</ul>)",
     re.DOTALL,
 )
-
 
 def _blockify(content_html, font_size_px):
     """
@@ -306,7 +89,6 @@ def _blockify(content_html, font_size_px):
             parts.append(f'<!-- wp:list -->\n{m.group("ul")}\n<!-- /wp:list -->')
 
     return "\n\n".join(parts)
-
 
 def run():
     print("Checking connectivity to WordPress...")
@@ -401,8 +183,10 @@ def run():
             ) + "</p>"
             article["content_html"] += "\n" + links_html
 
-        # Find/download/upload images and swap in the placeholders
-        featured_media_id = _process_images(article)
+        # Image sourcing has been removed -- just strip any leftover
+        # placeholders instead of trying to fill them in.
+        article["content_html"] = _strip_image_placeholders(article["content_html"])
+        featured_media_id = None
 
         # Append the "Latest Posts" block
         _append_latest_posts_block(article, latest_posts)
@@ -422,7 +206,6 @@ def run():
         time.sleep(2)  # be polite to the WP API between requests
 
     print(f"Done. Published/drafted {published_count} article(s) this run.")
-
 
 if __name__ == "__main__":
     try:
