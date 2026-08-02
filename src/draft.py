@@ -1,15 +1,15 @@
 """
 Uses an LLM (Claude or Gemini, whichever is configured) to:
-  1. Classify which candidate topics are actually rock-relevant (some
-     competitor feeds, e.g. Rolling Stone, cover all genres -- keyword
-     matching can't reliably catch "BTS" or "Lil Baby" as off-topic since
-     those headlines don't contain words like "k-pop" or "rap" at all, but
-     an LLM recognizes the artists directly).
-  2. Draft an original, SEO-optimized article for a chosen topic. Only
-     titles/summaries/links from competitor RSS feeds are passed in as
-     factual signals -- the model is explicitly instructed to write
-     original analysis, not to paraphrase or closely follow any single
-     source.
+1. Classify which candidate topics are actually rock-relevant (some
+   competitor feeds, e.g. Rolling Stone, cover all genres -- keyword
+   matching can't reliably catch "BTS" or "Lil Baby" as off-topic since
+   those headlines don't contain words like "k-pop" or "rap" at all, but
+   an LLM recognizes the artists directly).
+2. Draft an original, SEO-optimized article for a chosen topic. Only
+   titles/summaries/links from competitor RSS feeds are passed in as
+   factual signals -- the model is explicitly instructed to write
+   original analysis, not to paraphrase or closely follow any single
+   source.
 """
 
 import json
@@ -42,28 +42,28 @@ outlets' coverage as their source material.
    interpretation, or editorializing about what something "means" beyond
    what the sources themselves report.
 1a. NEUTRAL FRAMING -- do not upgrade a neutral fact into a more dramatic
-   or interpretive claim. Concretely:
-   - Don't imply an audience's reaction or sentiment ("fans were
-     disappointed by...") unless a source explicitly says the audience
-     reacted that way. If a source says fans were surprised by a specific
-     change (e.g. omitted songs), keep that specific framing rather than
-     substituting a different implied reaction (e.g. don't turn "fans
-     were surprised by omitted songs" into "fans experienced a shorter
-     show," which shifts the claim and implies a negative reaction the
-     source didn't state).
-   - Don't frame a neutral numeric comparison as a deliberate decision
-     unless the source says it was one. "The show ran 90 minutes, down
-     from 120 at the previous stop" is neutral; "marking a deliberate
-     reduction in length" implies intent the source may not support --
-     only use language like that if a source explicitly frames it as a
-     choice.
-   - When a specific stat or ranking is attributed to a named source in
-     the article (e.g. "according to setlist.fm," a chart, a specific
-     report), KEEP that attribution in your own sentence rather than
-     generalizing it into an unqualified claim. "Third-most-played song
-     in the band's catalog, per setlist.fm" is accurate; "third-most-
-     performed song in the band's history" overstates it as an official,
-     universally-tracked ranking.
+    or interpretive claim. Concretely:
+    - Don't imply an audience's reaction or sentiment ("fans were
+      disappointed by...") unless a source explicitly says the audience
+      reacted that way. If a source says fans were surprised by a specific
+      change (e.g. omitted songs), keep that specific framing rather than
+      substituting a different implied reaction (e.g. don't turn "fans
+      were surprised by omitted songs" into "fans experienced a shorter
+      show," which shifts the claim and implies a negative reaction the
+      source didn't state).
+    - Don't frame a neutral numeric comparison as a deliberate decision
+      unless the source says it was one. "The show ran 90 minutes, down
+      from 120 at the previous stop" is neutral; "marking a deliberate
+      reduction in length" implies intent the source may not support --
+      only use language like that if a source explicitly frames it as a
+      choice.
+    - When a specific stat or ranking is attributed to a named source in
+      the article (e.g. "according to setlist.fm," a chart, a specific
+      report), KEEP that attribution in your own sentence rather than
+      generalizing it into an unqualified claim. "Third-most-played song
+      in the band's catalog, per setlist.fm" is accurate; "third-most-
+      performed song in the band's history" overstates it as an official,
+      universally-tracked ranking.
 2. SYNTHESIZE ACROSS ALL provided sources to build the most complete,
    accurate picture -- don't just rewrite the single source with the most
    detail. Cross-check: if multiple sources report the same fact, that's
@@ -83,50 +83,45 @@ outlets' coverage as their source material.
    this headline/opening be confirmed as accurate by someone who just
    read the source material? If not, it's too speculative.
 4a. LISTS: if the article includes a setlist, ranking, or any other
-   enumerated set of items (song titles, album tracklist, etc.), format
-   it as a proper HTML list -- <ol><li>Song One</li><li>Song Two</li>...
-   </ol> for a setlist (order matters) or <ul> for an unordered list --
-   never as a run-together comma-separated list inside a <p>.
+    enumerated set of items (song titles, album tracklist, etc.), format
+    it as a proper HTML list -- <ol><li>Song One</li><li>Song Two</li>...
+    </ol> for a setlist (order matters) or <ul> for an unordered list --
+    never as a run-together comma-separated list inside a <p>.
 4b. READABILITY -- SUBHEADINGS: if the article is longer than ~300 words,
-   it MUST include at least one <h2> subheading within the first ~300
-   words, and roughly one <h2> every 250-350 words after that. Do not let
-   a long, unbroken run of paragraphs sit under only the title. Subheads
-   should be genuine section breaks (a new angle, a new fact cluster, a
-   quote section) not decorative -- and skip them entirely for short
-   articles (under ~300 words), which don't need any.
+    it MUST include at least one <h2> subheading within the first ~300
+    words, and roughly one <h2> every 250-350 words after that. Do not let
+    a long, unbroken run of paragraphs sit under only the title. Subheads
+    should be genuine section breaks (a new angle, a new fact cluster, a
+    quote section) not decorative -- and skip them entirely for short
+    articles (under ~300 words), which don't need any.
 4c. READABILITY -- SENTENCE LENGTH: keep the large majority of sentences
-   at 20 words or fewer. If a sentence runs longer, check whether it's
-   really two ideas joined together -- if so, split it into two
-   sentences. A few longer sentences are fine for natural variety, but
-   they should be a small minority (well under a quarter of all
-   sentences), not close to half.
-5. Include image placeholders in content_html: put <!--IMAGE_1--> right
-   after the article's opening paragraph (this becomes both the featured
-   image and the first in-article image), then <!--IMAGE_2-->,
-   <!--IMAGE_3--> etc., one after each subsequent <h2> section heading.
-   Use 2-4 placeholders total depending on article length (short article:
-   2, long article: up to 4). For each placeholder, provide a matching
-   entry in "image_queries", in the same order. Each query should name
-   the SPECIFIC band/artist relevant to that part of the article (e.g.
-   "Metallica live concert", "Ozzy Osbourne portrait", "Master of
-   Puppets album art") -- PREFER the band/artist over a venue name even
-   in sections about a specific show or venue (e.g. use "Bon Jovi live
-   concert" rather than "Madison Square Garden," since venue photos tend
-   to be architecture/exterior shots that are a weaker fit than a band
-   photo) -- the system will first search for a real,
-   properly-licensed photo of that exact subject, and automatically fall
-   back to a generic music-themed stock photo only if none is found. Keep
-   each query concise (3-6 words).
+    at 20 words or fewer. If a sentence runs longer, check whether it's
+    really two ideas joined together -- if so, split it into two
+    sentences. A few longer sentences are fine for natural variety, but
+    they should be a small minority (well under a quarter of all
+    sentences), not close to half.
+5. TITLE STYLE: the title must be specific, accurate, AND genuinely
+   eye-catching / SEO-optimized -- not a dry, academic-sounding
+   description of the article's topic. Avoid vague, report-style
+   phrasing like "Examining the Overlooked Solo Albums From Members of
+   the Eagles" -- prefer a direct, punchy phrasing a reader would
+   actually want to click and that matches how people search, e.g. "The
+   Best Eagles Solo Albums You May Have Missed" for that same article.
+   Where it genuinely fits the content, lean on proven high-CTR patterns
+   -- "The Best X You May Have Missed", "Why X Still Matters", "X Songs
+   You Forgot Were Written By Y", direct numbers ("5 Deep Cuts..."),
+   or a strong direct claim -- without turning into misleading clickbait
+   or overstating what the article actually says. Every word in the
+   title must still be something the article backs up.
 6. Output must be valid JSON matching this exact schema, and NOTHING else
    -- no markdown code fences, no preamble, no explanation:
 
 {{
-  "title": "string, accurate and specific (not vague or clickbait-y), states the actual news, under 70 chars",
+  "title": "string, accurate and specific, states the actual news or angle, written to be eye-catching and SEO-friendly (see rule 5), under 70 chars",
   "seo_title": "string, SEO title tag, under 60 chars, includes primary keyword",
   "meta_description": "string, under 155 chars, includes primary keyword, makes people want to click",
   "focus_keyword": "string, 2-4 word primary SEO keyword phrase for this article",
   "tags": ["exactly 8 to 10 relevant tags, e.g. band names, genres, related artists, subgenres"],
-  "image_queries": ["specific band/artist/album name + descriptive term for each IMAGE placeholder used, in order"],
   "excerpt": "string, 1-2 sentence factual teaser, under 200 chars",
   "content_html": "string, the full article body as clean HTML using <p>, <h2>, <h3> tags where natural. Do NOT include an <h1> (WordPress adds the title separately). LENGTH: when full article text was retrieved for the sources (not just RSS summaries), extract and include the genuinely reported facts, direct quotes, and specific details actually present in that full text -- aim for 600-900 words in that case, matching the depth of a real news report rather than a condensed summary of one. When only RSS summaries are available (no full text), 300-500 words is appropriate since there's less real material to draw from -- don't pad with speculation just to hit a length target either way. The test is always: does the length match how much genuine source material exists, not a fixed target."
 }}
@@ -148,16 +143,14 @@ Respond with ONLY a JSON array of the relevant headline numbers, e.g.
 [1,3,4,7]. No other text, no explanation.
 """
 
-
 def _clean_json_text(raw_text):
     raw_text = raw_text.strip()
     if raw_text.startswith("```"):
         raw_text = raw_text.strip("`")
-        if raw_text.startswith("json"):
-            raw_text = raw_text[4:]
-        raw_text = raw_text.strip()
+    if raw_text.startswith("json"):
+        raw_text = raw_text[4:]
+    raw_text = raw_text.strip()
     return raw_text
-
 
 def _call_anthropic(system_prompt, user_prompt, max_tokens):
     import anthropic
@@ -170,7 +163,6 @@ def _call_anthropic(system_prompt, user_prompt, max_tokens):
         messages=[{"role": "user", "content": user_prompt}],
     )
     return response.content[0].text
-
 
 def _call_gemini(system_prompt, user_prompt, max_tokens):
     from google import genai
@@ -187,7 +179,6 @@ def _call_gemini(system_prompt, user_prompt, max_tokens):
     )
     return response.text
 
-
 def _call_llm(system_prompt, user_prompt, max_tokens=4000):
     if LLM_PROVIDER == "anthropic":
         if not ANTHROPIC_API_KEY:
@@ -199,7 +190,6 @@ def _call_llm(system_prompt, user_prompt, max_tokens=4000):
         return _call_gemini(system_prompt, user_prompt, max_tokens)
     else:
         raise ValueError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER!r} (expected 'anthropic' or 'gemini')")
-
 
 def filter_rock_relevant_topics(topics):
     """
@@ -230,7 +220,6 @@ def filter_rock_relevant_topics(topics):
     filtered = [t for i, t in enumerate(topics) if i in keep_idx]
     print(f"[info] Rock-relevance filter kept {len(filtered)} of {len(topics)} topics.")
     return filtered
-
 
 DUPLICATE_SYSTEM_PROMPT = """You are an editor for Deadikace, a rock music
 blog, checking new candidate news topics against a list of the blog's own
@@ -320,7 +309,6 @@ def _build_source_material(topic):
             )
     return "\n\n".join(source_blocks), full_text_count
 
-
 def draft_article(topic):
     """topic: one cluster dict from discover.get_trending_topics(), ideally
     already enriched with full_text via article_fetch.enrich_topic_with_full_text"""
@@ -342,7 +330,6 @@ def draft_article(topic):
         raise ValueError(f"{LLM_PROVIDER} did not return valid JSON: {e}\nRaw output:\n{raw_text}")
 
     return article
-
 
 VERIFY_SYSTEM_PROMPT = """You are a copy editor fact-checking AND
 readability-editing a draft news article against its source material,
@@ -386,9 +373,6 @@ GENERAL RULES FOR BOTH PASSES:
   corrected version should be roughly the same length as the draft (or
   slightly longer, since splitting a sentence adds a few words), never
   noticeably shorter.
-- Preserve every <!--IMAGE_N--> placeholder EXACTLY where it is in the
-  content (inserting a new <h2> near one is fine, just don't remove or
-  move the placeholder itself).
 
 Respond with ONLY this JSON, nothing else:
 {
@@ -397,17 +381,14 @@ Respond with ONLY this JSON, nothing else:
 }
 """
 
-
 def verify_and_refine(article, topic):
     """
     Second pass: re-checks the drafted article against the same source
     material and tightens up any embellishment/over-interpretation before
     publishing. Falls back to the original article unchanged if the
-    verification call fails, or if it would have removed/altered the
-    image placeholders (a sign something went wrong with the edit).
+    verification call fails.
     """
     source_material, _ = _build_source_material(topic)
-    placeholders_before = set(re.findall(r"<!--IMAGE_\d+-->", article["content_html"]))
 
     user_prompt = (
         f"Source material:\n\n{source_material}\n\n"
@@ -422,12 +403,6 @@ def verify_and_refine(article, topic):
         corrected_html = result["content_html"]
     except Exception as e:
         print(f"[warn] Fact-check pass failed ({e}); publishing the original draft unchanged.")
-        return article
-
-    placeholders_after = set(re.findall(r"<!--IMAGE_\d+-->", corrected_html))
-    if placeholders_after != placeholders_before:
-        print("[warn] Fact-check pass altered the image placeholders unexpectedly; "
-              "keeping the original draft instead to avoid breaking image insertion.")
         return article
 
     def _word_count(html_str):
