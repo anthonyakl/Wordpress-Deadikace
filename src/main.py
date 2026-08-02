@@ -9,7 +9,7 @@ import re
 
 from config import (
     MAX_ARTICLES_PER_RUN, POST_STATUS, TARGET_CATEGORY, LATEST_POSTS_COUNT,
-    ARTICLE_FONT_SIZE_PX,
+    ARTICLE_FONT_SIZE_PX, ENABLE_SOURCE_IMAGES,
 )
 from discover import get_trending_topics
 from draft import draft_article, filter_rock_relevant_topics, filter_duplicate_topics, verify_and_refine
@@ -227,7 +227,10 @@ def run():
             # as the featured image (see IMAGE SOURCING NOTE in
             # article_fetch.py for the copyright tradeoff this involves).
             article["content_html"] = _strip_image_placeholders(article["content_html"])
-            featured_media_id = _get_featured_media_for_topic(topic, article["title"])
+            featured_media_id = (
+                _get_featured_media_for_topic(topic, article["title"])
+                if ENABLE_SOURCE_IMAGES else None
+            )
 
             # Append the "Latest Posts" block
             _append_latest_posts_block(article, latest_posts)
