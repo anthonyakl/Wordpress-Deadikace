@@ -28,6 +28,12 @@ def _env_int(key, default):
         print(f"[warn] Env var {key}={val!r} is not a valid integer; using default {default}.")
         return default
 
+def _env_bool(key, default):
+    val = _env(key, "")
+    if val == "":
+        return default
+    return val.strip().lower() in ("1", "true", "yes", "on")
+
 def _env_list(key, default_csv):
     val = _env(key, default_csv)
     return [item.strip() for item in val.split(",") if item.strip()]
@@ -61,6 +67,12 @@ POST_STATUS = _env("POST_STATUS", "publish")  # "publish" or "draft"
 
 # Max number of new articles to generate per run
 MAX_ARTICLES_PER_RUN = _env_int("MAX_ARTICLES_PER_RUN", 2)
+
+# Whether to use the source article's own preview image (og:image) as the
+# featured image, re-hosted on Deadikace. See README.md Step 8 for the
+# copyright tradeoff this involves -- set to false to publish without any
+# featured image instead, which carries no such risk.
+ENABLE_SOURCE_IMAGES = _env_bool("ENABLE_SOURCE_IMAGES", True)
 
 # A story must appear in at least this many competitor feeds to be
 # considered "trending" enough to write about. Set to 1 to write about
