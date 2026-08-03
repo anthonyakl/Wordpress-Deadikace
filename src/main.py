@@ -58,18 +58,23 @@ def _get_featured_media_for_topic(topic, article_title):
         image_bytes, content_type = download_image_bytes(image_url)
         if not image_bytes:
             continue
+        # Prefer the source's own caption/credit text if we found one
+        # (e.g. "Photo: Jane Smith, licensed CC BY 2.0"); fall back to a
+        # generic credit line naming the outlet if not.
+        alt_text = item.get("image_caption") or f"Photo via {item.get('source', 'source article')}"
         try:
             media = upload_media(
                 image_bytes,
                 filename=article_title,
-                alt_text=f"Photo via {item.get('source', 'source article')}",
+                alt_text=alt_text,
                 content_type=content_type,
             )
         except Exception as e:
             print(f"[warn] Failed to upload source image to WordPress media library: {e}")
             continue
         if media:
-            print(f"[info] Using source image from {item.get('source', 'source article')} as featured image.")
+            print(f"[info] Using source image from {item.get('source', 'source article')} as featured image "
+                  f"(caption: {alt_text!r}).")
             return media["id"]
     return None
 
