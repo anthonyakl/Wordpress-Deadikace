@@ -54,6 +54,13 @@ outlets' coverage as their source material.
    When you do split, base EACH article only on the subset of source
    material that's actually about that story -- do not pad a thin split
    with details that belong to the other story.
+   Each source block below is labeled "Source #N". For every article you
+   output (whether the array has one element or several), set
+   source_item_indices to the list of source numbers that article is
+   actually based on. This matters even when there's only one story --
+   it's how the featured image and other per-source assets get matched
+   to the right article instead of picked from the wrong source when a
+   topic contains multiple unrelated items.
 1a. NEVER ADD A FACT THAT ISN'T IN THE SOURCE MATERIAL, even if it sounds
     plausible, even if you're confident it's true from general knowledge,
     and even if it would make the story better. This includes: final
@@ -224,6 +231,7 @@ outlets' coverage as their source material.
   "seo_title": "string, SEO title tag, under 60 chars, includes primary keyword",
   "meta_description": "string, under 155 chars, includes primary keyword, makes people want to click",
   "focus_keyword": "string, 2-4 word primary SEO keyword phrase for this article",
+  "source_item_indices": [1, 2],
   "tags": ["exactly 8 to 10 relevant tags, e.g. band names, genres, related artists, subgenres"],
   "excerpt": "string, 1-2 sentence factual teaser, under 200 chars",
   "content_html": "string, the full article body as clean HTML using <p>, <h2>, <h3> tags where natural. Do NOT include an <h1> (WordPress adds the title separately). LENGTH: when full article text was retrieved for the sources (not just RSS summaries), extract and include the genuinely reported facts, direct quotes, and specific details actually present in that full text -- aim for 600-900 words in that case, matching the depth of a real news report rather than a condensed summary of one. When only RSS summaries are available (no full text), 300-500 words is appropriate since there's less real material to draw from -- don't pad with speculation just to hit a length target either way. The test is always: does the length match how much genuine source material exists, not a fixed target."
@@ -459,19 +467,19 @@ def dedupe_topics_within_batch(topics):
 def _build_source_material(topic):
     source_blocks = []
     full_text_count = 0
-    for item in topic["items"]:
+    for i, item in enumerate(topic["items"], start=1):
         full_text = item.get("full_text")
         if full_text:
             full_text_count += 1
             source_blocks.append(
-                f"Source: {item['source']} (FULL ARTICLE TEXT)\n"
+                f"Source #{i}: {item['source']} (FULL ARTICLE TEXT)\n"
                 f"Title: {item['title']}\n"
                 f"Full text: {full_text}\n"
                 f"Link: {item['link']}"
             )
         else:
             source_blocks.append(
-                f"Source: {item['source']} (RSS summary only)\n"
+                f"Source #{i}: {item['source']} (RSS summary only)\n"
                 f"Title: {item['title']}\n"
                 f"Summary: {item['summary']}\n"
                 f"Link: {item['link']}"
@@ -509,6 +517,14 @@ def draft_article(topic):
 
     if not isinstance(articles, list) or not articles:
         raise ValueError(f"{LLM_PROVIDER} did not return a non-empty JSON array: {raw_text}")
+
+    # Defensive default: if the model omitted source_item_indices (or the
+    # whole array has just one article covering everything), fall back to
+    # "all source items belong to this article" rather than none, so
+    # image sourcing still has something to work with.
+    for article in articles:
+        if not article.get("source_item_indices"):
+            article["source_item_indices"] = list(range(1, len(topic["items"]) + 1))
 
     return articles
 
