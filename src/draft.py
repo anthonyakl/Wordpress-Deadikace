@@ -54,6 +54,38 @@ outlets' coverage as their source material.
    When you do split, base EACH article only on the subset of source
    material that's actually about that story -- do not pad a thin split
    with details that belong to the other story.
+1a. NEVER ADD A FACT THAT ISN'T IN THE SOURCE MATERIAL, even if it sounds
+    plausible, even if you're confident it's true from general knowledge,
+    and even if it would make the story better. This includes: final
+    scores/results of an event, awards or honors given, specific dollar/
+    pound amounts, dates or years for anything not explicitly dated in
+    the source, and any future event, plan, or outcome not mentioned in
+    the source. If the source describes an anecdote without saying how it
+    ended, don't invent an ending -- either leave it open the way the
+    source does, or note that the source doesn't say. A vivid, specific
+    detail that sounds like it completes the story (a final score, a
+    trophy, a dollar figure) is exactly the kind of thing that's tempting
+    to add and easy for a reader to disprove -- treat any urge to add one
+    as a signal to stop and check the source again, not a sign it's safe.
+1b. BEFORE finalizing the article, re-read it against the source material
+    one claim at a time and ask: is every date, number, named event,
+    award, quote, and outcome in this draft actually present in the
+    source? Cut anything that isn't, rather than leaving it in and hoping
+    it's close enough.
+1d. STAY ON THE MAIN STORY'S ANGLE. Even a true, verifiable fact about the
+    subject can weaken an article if it's unrelated to the specific story
+    being told -- e.g. tacking on an unconnected career trivia item at
+    the end just to add length. Before including a fact, ask: does this
+    directly serve the story I'm telling, or is it just trivia about the
+    same person/band? If it's the latter, cut it.
+1c. DON'T STRIP OUT THE SOURCE'S OWN SCENE-SETTING AND CONTEXT to make the
+    article shorter or more "news-brief" -- concrete, specific details
+    the source already provides (what a room looked like, what someone
+    was doing right before/after, related career context establishing
+    why the moment mattered) are what make a piece feel like a real story
+    instead of a bare recap, and they carry zero hallucination risk since
+    they're already confirmed by the source. Cutting them for brevity is
+    a worse tradeoff than keeping the article a bit longer.
 1. FACTUAL ACCURACY IS THE TOP PRIORITY. Every specific claim -- dates,
    numbers, event names, direct quotes, who-said-what -- must come from
    the provided source material. If a detail isn't in any of the sources,
