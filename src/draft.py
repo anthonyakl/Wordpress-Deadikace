@@ -181,6 +181,22 @@ outlets' coverage as their source material.
     sentences. A few longer sentences are fine for natural variety, but
     they should be a small minority (well under a quarter of all
     sentences), not close to half.
+4c. ILLUSTRATIVE IMAGES: propose 1-2 additional images for a short article
+    (under ~500 words), or up to 3-4 for a longer one -- scale to length,
+    don't force more images than the content naturally supports. Each one
+    should illustrate something SPECIFIC actually mentioned in the
+    article (a named album's cover, a named venue, a specific person or
+    event), not a generic mood shot. Write the search query as a
+    specific, disambiguating phrase (see the illustrative_images schema
+    field below for the exact reasoning and an example) -- this is
+    searched against Wikimedia Commons, so a vague or bare-name query
+    risks matching the wrong, unrelated subject. For placement, prefer
+    right after the H2 heading whose section that image best supports;
+    only use the "middle of the article" fallback if there's truly no
+    heading it fits better under. If the article has no natural subject
+    for extra images beyond the featured image (e.g. a very short news
+    brief), return an empty illustrative_images array rather than forcing
+    irrelevant ones in.
 5. TITLE STYLE: the title must be specific, accurate, AND genuinely
    eye-catching / SEO-optimized -- not a dry, academic-sounding
    description of the article's topic. Avoid vague, report-style
@@ -211,6 +227,14 @@ outlets' coverage as their source material.
   "tags": ["exactly 8 to 10 relevant tags, e.g. band names, genres, related artists, subgenres"],
   "excerpt": "string, 1-2 sentence factual teaser, under 200 chars",
   "content_html": "string, the full article body as clean HTML using <p>, <h2>, <h3> tags where natural. Do NOT include an <h1> (WordPress adds the title separately). LENGTH: when full article text was retrieved for the sources (not just RSS summaries), extract and include the genuinely reported facts, direct quotes, and specific details actually present in that full text -- aim for 600-900 words in that case, matching the depth of a real news report rather than a condensed summary of one. When only RSS summaries are available (no full text), 300-500 words is appropriate since there's less real material to draw from -- don't pad with speculation just to hit a length target either way. The test is always: does the length match how much genuine source material exists, not a fixed target."
+,
+  "illustrative_images": [
+    {{
+      "query": "string, a SPECIFIC multi-word Wikimedia Commons search naming exactly what the image should show -- e.g. 'Similitude of a Dream album cover Neal Morse Band', not just 'Neal Morse Band' or 'Similitude of a Dream'. A bare band/artist name is too ambiguous (it can match an unrelated same-named subject, like an actual eagle for the band Eagles) -- always combine the specific thing (album, venue, event, person) with enough context words to disambiguate it.",
+      "placement_after_heading": "string, the exact text of the <h2> heading in content_html after which this image should be inserted, or \"\" to place it roughly in the middle of the article if there's no natural heading to anchor to",
+      "caption": "string, a short factual caption for the image, e.g. the album title and artist, or what's shown"
+    }}
+  ]
 }}
 ]
 """
