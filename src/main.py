@@ -14,6 +14,7 @@ from config import (
 from discover import get_trending_topics
 from draft import draft_article, filter_rock_relevant_topics, filter_duplicate_topics, dedupe_topics_within_batch, verify_and_refine
 from article_fetch import enrich_topic_with_full_text, download_image_bytes
+from wikimedia import search_commons_image, download_commons_image
 from wordpress import (
     get_recent_post_titles, get_latest_posts, get_or_create_category,
     create_post, search_related_posts, check_connectivity, upload_media,
@@ -77,6 +78,85 @@ def _get_featured_media_for_topic(topic, article_title):
                   f"(caption: {alt_text!r}).")
             return media["id"]
     return None
+
+def _insert_illustrative_images(article):
+    """
+    Processes article["illustrative_images"] (proposed by the drafting
+    model -- see rule 4c in DRAFT_SYSTEM_PROMPT): searches Wikimedia
+    Commons for each specific query, uploads any match found to the
+    WordPress media library, and splices a <figure> with the image and
+    caption into content_html at the requested position (right after the
+    named H2 heading, or roughly in the middle if no heading was given).
+    Silently skips any image that fails to find a match, download, or
+    upload -- a missing illustrative image is not worth failing the
+    whole article over.
+    """
+    requests_list = article.get("illustrative_images") or []
+    if not requests_list:
+        return article
+
+    content_html = article["content_html"]
+
+    for req in requests_list:
+        query = (req.get("query") or "").strip()
+        if not query:
+            continue
+
+        result = search_commons_image(query)
+        if not result:
+            print(f"[info] No Wikimedia Commons match found for illustrative image query: {query!r}")
+            continue
+
+        image_bytes, content_type = download_commons_image(result["url"])
+        if not image_bytes:
+            continue
+
+        caption_text = req.get("caption") or result["credit"]
+        try:
+            media = upload_media(
+                image_bytes,
+                filename=result["title"] or query,
+                alt_text=caption_text,
+                content_type=content_type,
+            )
+        except Exception as e:
+            print(f"[warn] Failed to upload illustrative image to WordPress media library: {e}")
+            continue
+        if not media:
+            continue
+
+        figure_html = (
+            f'<figure class="wp-block-image size-large">'
+            f'<img src="{media["source_url"]}" alt="{caption_text}" />'
+            f'<figcaption>{caption_text} ({result["credit"]})</figcaption>'
+            f'</figure>'
+        )
+
+        heading = (req.get("placement_after_heading") or "").strip()
+        inserted = False
+        if heading:
+            heading_match = re.search(
+                r"(<h2[^>]*>\s*" + re.escape(heading) + r"\s*</h2>)",
+                content_html, re.IGNORECASE,
+            )
+            if heading_match:
+                insert_pos = heading_match.end()
+                content_html = content_html[:insert_pos] + figure_html + content_html[insert_pos:]
+                inserted = True
+        if not inserted:
+            paragraphs = list(re.finditer(r"</p>", content_html, re.IGNORECASE))
+            if paragraphs:
+                mid = paragraphs[len(paragraphs) // 2]
+                insert_pos = mid.end()
+                content_html = content_html[:insert_pos] + figure_html + content_html[insert_pos:]
+            else:
+                content_html += figure_html
+
+        print(f"[info] Inserted illustrative image for query {query!r} "
+              f"({'after heading' if inserted else 'mid-article fallback'}).")
+
+    article["content_html"] = content_html
+    return article
 
 def _append_latest_posts_block(article, latest_posts):
     if not latest_posts:
@@ -240,6 +320,12 @@ def run():
                 _get_featured_media_for_topic(topic, article["title"])
                 if ENABLE_SOURCE_IMAGES else None
             )
+
+            # Insert any illustrative images the drafting model proposed
+            # (see rule 4c in DRAFT_SYSTEM_PROMPT), before appending the
+            # "Latest Posts" block so images land within the article body,
+            # not after the recirculation block.
+            article = _insert_illustrative_images(article)
 
             # Append the "Latest Posts" block
             _append_latest_posts_block(article, latest_posts)
