@@ -28,6 +28,7 @@ tradeoff the site owner has chosen (image relevance over image licensing
 certainty) after weighing both options, not a default best practice.
 """
 
+import re
 import requests
 import trafilatura
 
@@ -59,8 +60,13 @@ def _fetch_html(url):
 
 def fetch_source_image_url(url, html=None):
     """
-    Returns the source article's og:image URL (the same preview photo used
-    when the article is shared on social media), or None if unavailable.
+    Returns (image_url, caption_text) for the source article's og:image
+    (the same preview photo used when the article is shared on social
+    media), or (None, None) if unavailable. caption_text is a best-effort
+    extraction of any figcaption/photo-credit text near that image in the
+    source HTML (e.g. "Photo: Jane Smith, licensed CC BY 2.0") -- None if
+    nothing usable was found, in which case a generic "Photo via {source}"
+    credit should be used as a fallback by the caller.
     See the IMAGE SOURCING NOTE at the top of this file for the copyright
     tradeoff this involves -- this is a deliberate, explicitly-requested
     fallback, not a default recommendation.
@@ -68,14 +74,39 @@ def fetch_source_image_url(url, html=None):
     if html is None:
         html = _fetch_html(url)
     if not html:
-        return None
+        return None, None
     try:
         metadata = trafilatura.extract_metadata(html)
     except Exception as e:
         print(f"[warn] Failed to extract image metadata from {url}: {e}")
-        return None
-    if metadata and metadata.image:
-        return metadata.image
+        return None, None
+    image_url = metadata.image if metadata else None
+    if not image_url:
+        return None, None
+    caption_text = _extract_image_caption(html)
+    return image_url, caption_text
+
+def _extract_image_caption(html):
+    """
+    Best-effort extraction of a photo caption/credit near the article's
+    lead image. Looks for the first <figcaption> in the page (the common
+    pattern for a hero/lead image caption), falling back to a nearby
+    "Photo:" / "Credit:" style text pattern if no figcaption exists.
+    Returns None if nothing plausible is found -- callers should fall
+    back to a generic credit line in that case, not leave the field
+    empty in a way that looks broken.
+    """
+    figcaption_match = re.search(r"<figcaption[^>]*>(.*?)</figcaption>", html, re.IGNORECASE | re.DOTALL)
+    if figcaption_match:
+        text = re.sub(r"<[^>]+>", " ", figcaption_match.group(1))
+        text = " ".join(text.split())
+        if text and len(text) < 300:
+            return text
+
+    credit_match = re.search(r"((?:Photo|Image|Credit)\s*:\s*[^<\n]{3,150})", html, re.IGNORECASE)
+    if credit_match:
+        return " ".join(credit_match.group(1).split())
+
     return None
 
 def download_image_bytes(image_url, max_bytes=8_000_000):
@@ -108,6 +139,7 @@ def enrich_topic_with_full_text(topic, max_sources=4):
         if fetched_count >= max_sources:
             item["full_text"] = None
             item["image_url"] = None
+            item["image_caption"] = None
             continue
         html = _fetch_html(item["link"])
         if html:
@@ -117,10 +149,11 @@ def enrich_topic_with_full_text(topic, max_sources=4):
                 print(f"[warn] Failed to extract article text from {item['link']}: {e}")
                 text = None
             item["full_text"] = text.strip()[:5000] if text else None
-            item["image_url"] = fetch_source_image_url(item["link"], html=html)
+            item["image_url"], item["image_caption"] = fetch_source_image_url(item["link"], html=html)
         else:
             item["full_text"] = None
             item["image_url"] = None
+            item["image_caption"] = None
         if item["full_text"]:
             fetched_count += 1
     return topic
