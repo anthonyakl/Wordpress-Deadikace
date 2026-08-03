@@ -88,24 +88,59 @@ def fetch_source_image_url(url, html=None):
 
 def _extract_image_caption(html):
     """
-    Best-effort extraction of a photo caption/credit near the article's
-    lead image. Looks for the first <figcaption> in the page (the common
-    pattern for a hero/lead image caption), falling back to a nearby
+    Best-effort extraction of a SHORT photo credit line near the
+    article's lead image, e.g. "Credit: Getty Images" rather than a full
+    descriptive caption. Earlier versions returned the whole figcaption
+    text (description + credit combined), but that's too long to display
+    as a corner overlay on the frontend without overlapping the title/
+    date on mobile. Looks for the first <figcaption>, then tries to pull
+    just the trailing credit/agency portion out of it; falls back to a
     "Photo:" / "Credit:" style text pattern if no figcaption exists.
     Returns None if nothing plausible is found -- callers should fall
     back to a generic credit line in that case, not leave the field
     empty in a way that looks broken.
     """
     figcaption_match = re.search(r"<figcaption[^>]*>(.*?)</figcaption>", html, re.IGNORECASE | re.DOTALL)
+    full_caption = None
     if figcaption_match:
         text = re.sub(r"<[^>]+>", " ", figcaption_match.group(1))
         text = " ".join(text.split())
         if text and len(text) < 300:
-            return text
+            full_caption = text
 
-    credit_match = re.search(r"((?:Photo|Image|Credit)\s*:\s*[^<\n]{3,150})", html, re.IGNORECASE)
-    if credit_match:
-        return " ".join(credit_match.group(1).split())
+    if not full_caption:
+        credit_match = re.search(r"((?:Photo|Image|Credit)\s*:\s*[^<\n]{3,150})", html, re.IGNORECASE)
+        if credit_match:
+            full_caption = " ".join(credit_match.group(1).split())
+
+    if not full_caption:
+        return None
+
+    return _shorten_to_credit(full_caption)
+
+def _shorten_to_credit(full_caption):
+    """
+    Reduces a full scraped caption down to just a short "Credit: X" line,
+    since the corner overlay only has room for a short credit, not a
+    full description. Tries a few common patterns before giving up and
+    returning None (caller falls back to a generic "Photo via {source}"
+    line in that case).
+    """
+    m = re.search(r"\bvia\s+([A-Z][\w.&'-]{2,40}(?:\s+[A-Z][\w.&'-]{1,40}){0,3})\s*\.?$", full_caption)
+    if m:
+        return f"Credit: {m.group(1).strip().rstrip('.')}"
+
+    m = re.match(r"^(?:Photo|Image|Credit)\s*:\s*(.{2,60}?)(?:\.|,|$)", full_caption, re.IGNORECASE)
+    if m:
+        return f"Credit: {m.group(1).strip()}"
+
+    known_agencies = [
+        "Getty Images", "Associated Press", "Reuters", "Shutterstock",
+        "WireImage", "AFP", "Redferns", "FilmMagic",
+    ]
+    for agency in known_agencies:
+        if agency.lower() in full_caption.lower():
+            return f"Credit: {agency}"
 
     return None
 
