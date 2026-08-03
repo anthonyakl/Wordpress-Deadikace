@@ -43,26 +43,41 @@ def _strip_image_placeholders(content_html):
         content_html = content_html.replace(f"<!--IMAGE_{i}-->", "")
     return content_html
 
-def _get_featured_media_for_topic(topic, article_title):
+def _get_featured_media_for_topic(topic, article_title, source_item_indices=None):
     """
-    Downloads the source article's own preview image (og:image) and
+    Downloads a source article's own preview image (og:image) and
     re-hosts it on Deadikace as the featured image, since automatic
     image search/download was removed after repeatedly matching the
     wrong subject. See the IMAGE SOURCING NOTE in article_fetch.py for
     the copyright tradeoff this involves. Returns a media ID, or None
     if no source item had a usable image or the download/upload failed.
+
+    source_item_indices (1-based, matching the "Source #N" numbering the
+    drafting model saw) restricts which of the topic's source items are
+    considered. This matters when one topic produced MULTIPLE articles
+    (rule 0 in DRAFT_SYSTEM_PROMPT splitting unrelated stories) -- without
+    it, an article could end up with another split article's image, since
+    topic["items"] contains every source across all of them. If not
+    provided, falls back to considering every item in the topic (the
+    original, pre-split behavior).
     """
-    for item in topic.get("items", []):
+    items = topic.get("items", [])
+    if source_item_indices:
+        selected = {i - 1 for i in source_item_indices}
+        items = [item for i, item in enumerate(items) if i in selected]
+
+    for item in items:
         image_url = item.get("image_url")
         if not image_url:
             continue
         image_bytes, content_type = download_image_bytes(image_url)
         if not image_bytes:
             continue
-        # Prefer the source's own caption/credit text if we found one
-        # (e.g. "Photo: Jane Smith, licensed CC BY 2.0"); fall back to a
-        # generic credit line naming the outlet if not.
-        alt_text = item.get("image_caption") or f"Photo via {item.get('source', 'source article')}"
+        # Prefer the source's own short credit line if we found one
+        # (e.g. "Credit: Getty Images"); fall back to a generic credit
+        # line naming the outlet if not -- both short enough to display
+        # as a corner overlay without overlapping the title/date.
+        alt_text = item.get("image_caption") or f"Credit: {item.get('source', 'source article')}"
         try:
             media = upload_media(
                 image_bytes,
@@ -317,7 +332,9 @@ def run():
             # article_fetch.py for the copyright tradeoff this involves).
             article["content_html"] = _strip_image_placeholders(article["content_html"])
             featured_media_id = (
-                _get_featured_media_for_topic(topic, article["title"])
+                _get_featured_media_for_topic(
+                    topic, article["title"], article.get("source_item_indices")
+                )
                 if ENABLE_SOURCE_IMAGES else None
             )
 
