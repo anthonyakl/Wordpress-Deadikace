@@ -492,6 +492,13 @@ VERIFY_SYSTEM_PROMPT = """You are a copy editor fact-checking AND
 readability-editing a draft news article against its source material,
 for a rock music blog called Deadikace.
 
+Pay special attention to fabricated specifics that read as plausible but
+aren't actually in the source: an invented final score or result, an
+invented award/honor, an invented dollar/pound amount, an invented date,
+or an invented future event/plan. These are the most common and most
+damaging kind of error -- if you find one, remove it (don't just soften
+the wording) rather than leaving a fabricated-but-vague version in.
+
 You will be given the draft article's HTML content and the original
 source material it was based on. Do two passes over it:
 
