@@ -103,8 +103,20 @@ def search_commons_image(query):
     if not relevant:
         return None
 
-    relevant.sort(key=lambda c: (not c["extreme_shape"], c["relevance"]), reverse=True)
-    best = relevant[0]
+    # Hard-exclude extreme-shape (unusually tall/narrow) candidates
+    # entirely, rather than just deprioritizing them. An earlier version
+    # of this still picked an extreme-shape image if it was the only
+    # relevant match, relying on a display-layer CSS crop to make it look
+    # reasonable -- but cropping a bad image often hides the actual
+    # subject (e.g. a tall vertical photo cropped down to a sliver of
+    # sky). Better to have no illustrative image for this query than a
+    # badly-shaped one.
+    non_extreme = [c for c in relevant if not c["extreme_shape"]]
+    if not non_extreme:
+        return None
+
+    non_extreme.sort(key=lambda c: c["relevance"], reverse=True)
+    best = non_extreme[0]
 
     page, info = best["page"], best["info"]
     extmeta = info.get("extmetadata", {})
