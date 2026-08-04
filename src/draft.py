@@ -367,52 +367,55 @@ def filter_rock_relevant_topics(topics):
 
 DUPLICATE_SYSTEM_PROMPT = """You are an editor for Deadikace, a rock music
 blog, checking new candidate news topics against a list of the blog's own
-recent post titles.
+recent posts (title + a short excerpt of each).
 
 For each numbered candidate topic below, decide whether it is about the
-SAME underlying news story/event as any of the recent post titles -- even
-if the wording is completely different, or the candidate topic was picked
-up from a different outlet than whatever the earlier post was based on.
-The same announcement, event, or quote described in different words by a
-different publication still counts as a duplicate. A different piece of
-news about the same band/artist is NOT a duplicate (e.g. two separate
-posts about two different Metallica news items are both fine).
+SAME underlying news story/event as any of the existing posts, even if
+the headline wording is completely different, the story was covered by
+a different outlet, or it was picked up in a separate run of this same
+pipeline hours apart (e.g. two differently-worded headlines about the
+same interview, announcement, or event are still the same story). Use
+the excerpt, not just the title, to judge this -- headlines for the same
+story are often worded very differently by different outlets, but the
+actual content described will match.
+
+If you are genuinely unsure whether a candidate is the same story as an
+existing post, treat it as a duplicate and skip it -- publishing a
+near-duplicate is a worse outcome than missing one topic that had
+another angle, since the missed topic may well resurface as its own
+distinct story later.
 
 Respond with ONLY a JSON array of the candidate numbers that ARE
 duplicates of an existing recent post (i.e. should be skipped), e.g.
 [2,5]. Respond with [] if none are duplicates. No other text.
 """
 
-def filter_duplicate_topics(topics, existing_titles):
+def filter_duplicate_topics(topics, existing_posts):
     """
     Removes candidate topics that are about the same underlying story as
     a recently-published Deadikace post, even when the wording is
     completely different or the story was picked up from a different
-    outlet than whichever one the earlier post was drafted from.
+    outlet, or in a separate run of this pipeline hours apart.
 
-    This exists because the cheaper per-topic guard in main.py
-    (_title_already_covered) compares the source RSS headline against the
-    post's own published title -- but that published title is an
-    original, LLM-authored headline, not a copy of the source headline,
-    so genuinely duplicate stories can still slip through if the wording
-    diverges enough. This is a batched LLM call (like
-    filter_rock_relevant_topics above) so it costs one request per run,
-    not one per topic. Falls back to keeping everything if the
-    classification call fails for any reason.
+    existing_posts: list of {"title": ..., "excerpt": ...} dicts (see
+    wordpress.get_recent_posts_for_dedup) -- the excerpt is what lets
+    this catch same-story-different-headline cases that a title-only
+    comparison would miss.
     """
-    if not topics or not existing_titles:
+    if not topics or not existing_posts:
         return topics
 
     candidate_list = "\n".join(
         f"{i + 1}. " + " / ".join(item["title"] for item in t["items"][:3])
         for i, t in enumerate(topics)
     )
-    existing_list = "\n".join(f"- {t}" for t in existing_titles)
+    existing_list = "\n".join(
+        f"- {p['title']}" + (f" -- {p['excerpt']}" if p.get("excerpt") else "")
+        for p in existing_posts
+    )
     user_prompt = (
-        f"Recent Deadikace post titles:\n{existing_list}\n\n"
-        f"Candidate topics (each line may list headlines from multiple "
-        f"outlets covering what might be the same candidate story):\n"
-        f"{candidate_list}\n\n"
+        f"Candidate topics:\n{candidate_list}\n\n"
+        f"Existing recent posts (title -- excerpt):\n{existing_list}\n\n"
         "Return the JSON array of duplicate candidate numbers now."
     )
 
@@ -421,7 +424,7 @@ def filter_duplicate_topics(topics, existing_titles):
         raw = _clean_json_text(raw)
         dup_idx = {int(i) - 1 for i in json.loads(raw)}
     except Exception as e:
-        print(f"[warn] Duplicate-story filtering failed ({e}); proceeding without it.")
+        print(f"[warn] Duplicate-vs-existing-posts check failed ({e}); proceeding without it.")
         return topics
 
     for i in sorted(dup_idx):
