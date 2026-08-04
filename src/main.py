@@ -16,7 +16,7 @@ from draft import draft_article, filter_rock_relevant_topics, filter_duplicate_t
 from article_fetch import enrich_topic_with_full_text, download_image_bytes
 from wikimedia import search_commons_image, download_commons_image
 from wordpress import (
-    get_recent_post_titles, get_latest_posts, get_or_create_category,
+    get_recent_posts_for_dedup, get_latest_posts, get_or_create_category,
     create_post, search_related_posts, check_connectivity, upload_media,
 )
 
@@ -328,10 +328,11 @@ def run():
         return
 
     print("Fetching recent Deadikace posts to avoid duplicates...")
-    existing_titles = get_recent_post_titles()
+    existing_posts = get_recent_posts_for_dedup()
+    existing_titles = [p["title"] for p in existing_posts]
 
     print("Checking candidate topics against recently published posts to avoid duplicate stories, even if they were covered by a different outlet...")
-    topics = filter_duplicate_topics(topics, existing_titles)
+    topics = filter_duplicate_topics(topics, existing_posts)
 
     print("Checking candidate topics against each other, in case topic clustering "
           "missed that two of them are actually the same underlying story...")
