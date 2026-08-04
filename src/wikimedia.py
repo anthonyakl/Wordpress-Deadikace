@@ -27,13 +27,25 @@ def search_commons_image(query):
     Searches Wikimedia Commons for an image matching the query. Returns a
     dict with url, credit (artist + license text), and title, or None if
     nothing suitable was found.
+
+    Commons' own search ranking isn't always reliable for this use case
+    -- e.g. a query like "Bruce Springsteen performing live" once matched
+    a museum photo of one of his guitars on display, just because the
+    file's title/description happened to mention his name and "live"
+    (as in a "live music" exhibit) without the image actually showing a
+    performance. To reduce this, candidates are re-ranked by how many
+    query words actually appear in the candidate's own title, rather
+    than trusting Commons' result order at face value. Candidates with
+    an extreme aspect ratio (very tall/narrow, like a vertical museum
+    display shot) are also deprioritized, since they render awkwardly as
+    an in-article illustrative image regardless of subject match.
     """
     params = {
         "action": "query",
         "generator": "search",
         "gsrsearch": f"{query} filetype:bitmap",
         "gsrnamespace": 6,
-        "gsrlimit": 5,
+        "gsrlimit": 10,
         "prop": "imageinfo",
         "iiprop": "url|extmetadata|size",
         "format": "json",
@@ -50,6 +62,8 @@ def search_commons_image(query):
     if not pages:
         return None
 
+    query_words = {w for w in re.findall(r"[a-z0-9]+", query.lower()) if len(w) > 2}
+
     candidates = []
     for page in pages.values():
         imageinfo = page.get("imageinfo")
@@ -60,12 +74,30 @@ def search_commons_image(query):
         height = info.get("height", 0)
         if width < 300 or height < 200:
             continue
-        candidates.append((page, info))
+
+        title_words = set(re.findall(r"[a-z0-9]+", page.get("title", "").lower()))
+        relevance = len(query_words & title_words)
+
+        aspect_ratio = max(width, height) / max(1, min(width, height))
+        extreme_shape = aspect_ratio > 1.8
+
+        candidates.append({
+            "page": page,
+            "info": info,
+            "relevance": relevance,
+            "extreme_shape": extreme_shape,
+        })
 
     if not candidates:
         return None
 
-    page, info = candidates[0]
+    candidates.sort(key=lambda c: (not c["extreme_shape"], c["relevance"]), reverse=True)
+
+    best = candidates[0]
+    if best["relevance"] == 0 and any(c["relevance"] > 0 for c in candidates):
+        best = next(c for c in candidates if c["relevance"] > 0)
+
+    page, info = best["page"], best["info"]
     extmeta = info.get("extmetadata", {})
     artist = _clean_html(extmeta.get("Artist", {}).get("value", ""))
     license_name = extmeta.get("LicenseShortName", {}).get("value", "")
