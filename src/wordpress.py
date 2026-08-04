@@ -51,15 +51,38 @@ def check_connectivity():
 
 
 def get_recent_post_titles(per_page=50):
-    """Fetch recent post titles to avoid writing duplicate articles."""
+    """
+    Fetch recent post titles to avoid writing duplicate articles.
+    Kept for backwards compatibility -- prefer get_recent_posts_for_dedup()
+    for the duplicate-checking flow, which also returns excerpts so the
+    LLM-based check has more than a bare headline to compare against.
+    """
+    return [p["title"] for p in get_recent_posts_for_dedup(per_page)]
+
+def get_recent_posts_for_dedup(per_page=50):
+    """
+    Fetch recent posts' titles AND excerpts for duplicate-checking.
+    Comparing candidate topics against bare titles alone is unreliable --
+    two outlets (or two of our own runs) can cover the exact same story
+    with completely different headlines, and a title-only comparison
+    gives the LLM nothing to catch that with. The excerpt (first
+    sentence or two of the actual article) is usually enough to confirm
+    or rule out a match even when the headlines don't overlap at all.
+    """
     resp = _session.get(
         f"{API_ROOT}/posts",
-        params={"per_page": per_page, "_fields": "title,link"},
+        params={"per_page": per_page, "_fields": "title,excerpt,link"},
         auth=AUTH,
         timeout=REQUEST_TIMEOUT,
     )
     resp.raise_for_status()
-    return [p["title"]["rendered"] for p in resp.json()]
+    results = []
+    for p in resp.json():
+        title = p["title"]["rendered"]
+        excerpt = re.sub(r"<[^>]+>", " ", p.get("excerpt", {}).get("rendered", ""))
+        excerpt = " ".join(excerpt.split())[:200]
+        results.append({"title": title, "excerpt": excerpt})
+    return results
 
 
 def get_latest_posts(limit=5):
