@@ -176,13 +176,22 @@ def _insert_illustrative_images(article):
 def _insert_video_embeds(article):
     """
     Processes article["video_embeds"] (proposed by the drafting model --
-    see rule 4d in DRAFT_SYSTEM_PROMPT): splices each YouTube URL into
-    content_html as its own paragraph at the requested position (right
-    after the named H2 heading, or mid-article as a fallback). A bare
-    URL on its own line is WordPress's standard oEmbed pattern -- the
-    the_content filter chain auto-embeds it into a playable video on the
-    frontend, the same way the source article's own embeds work, without
-    needing to hand-build embed block markup here.
+    see rule 4d in DRAFT_SYSTEM_PROMPT): splices a real YouTube <iframe>
+    embed into content_html at the requested position (right after the
+    named H2 heading's block, or mid-article as a fallback).
+
+    IMPORTANT: this must run AFTER _blockify(), not before. Two reasons:
+    1. A hand-built iframe is used instead of WordPress's bare-URL
+       oEmbed autoembed, because that depends on a live oEmbed API call
+       succeeding at render time and can silently leave a plain
+       unclickable link behind if a caching layer serves the page
+       before that resolves -- a direct iframe always works.
+    2. _blockify()'s regex only recognizes <p>/<h2>/<h3>/<figure>/<ol>/
+       <ul> and would wrap any <figure>-based embed as a "wp:image"
+       block, which is semantically wrong for a video and can trigger a
+       block-validation warning in the editor. Running this after
+       blockify and wrapping the embed in its own proper "wp:html"
+       block avoids that entirely.
     """
     video_list = article.get("video_embeds") or []
     if not video_list:
@@ -195,27 +204,44 @@ def _insert_video_embeds(article):
         if not url:
             continue
 
-        embed_html = f'<p>{url}</p>'
+        video_id_match = re.search(r"(?:v=|youtu\.be/)([A-Za-z0-9_-]+)", url)
+        if not video_id_match:
+            continue
+        video_id = video_id_match.group(1)
+
+        iframe_html = (
+            '<figure style="position:relative;padding-bottom:56.25%;height:0;'
+            'overflow:hidden;max-width:100%;margin:20px 0;">'
+            f'<iframe src="https://www.youtube.com/embed/{video_id}" '
+            'title="YouTube video player" '
+            'style="position:absolute;top:0;left:0;width:100%;height:100%;" '
+            'frameborder="0" allow="accelerometer; autoplay; clipboard-write; '
+            'encrypted-media; gyroscope; picture-in-picture; web-share" '
+            'referrerpolicy="strict-origin-when-cross-origin" allowfullscreen>'
+            '</iframe></figure>'
+        )
+        embed_html = f'<!-- wp:html -->\n{iframe_html}\n<!-- /wp:html -->'
 
         heading = (video.get("placement_after_heading") or "").strip()
         inserted = False
         if heading:
             heading_match = re.search(
-                r"(<h2[^>]*>\s*" + re.escape(heading) + r"\s*</h2>)",
+                r"(<!-- wp:heading -->\s*<h2[^>]*>\s*" + re.escape(heading)
+                + r"\s*</h2>\s*<!-- /wp:heading -->)",
                 content_html, re.IGNORECASE,
             )
             if heading_match:
                 insert_pos = heading_match.end()
-                content_html = content_html[:insert_pos] + embed_html + content_html[insert_pos:]
+                content_html = content_html[:insert_pos] + "\n\n" + embed_html + content_html[insert_pos:]
                 inserted = True
         if not inserted:
-            paragraphs = list(re.finditer(r"</p>", content_html, re.IGNORECASE))
-            if paragraphs:
-                mid = paragraphs[len(paragraphs) // 2]
+            para_blocks = list(re.finditer(r"<!-- /wp:paragraph -->", content_html, re.IGNORECASE))
+            if para_blocks:
+                mid = para_blocks[len(para_blocks) // 2]
                 insert_pos = mid.end()
-                content_html = content_html[:insert_pos] + embed_html + content_html[insert_pos:]
+                content_html = content_html[:insert_pos] + "\n\n" + embed_html + content_html[insert_pos:]
             else:
-                content_html += embed_html
+                content_html += "\n\n" + embed_html
 
         print(f"[info] Embedded video {url} "
               f"({'after heading' if inserted else 'mid-article fallback'}).")
@@ -394,16 +420,18 @@ def run():
             # not after the recirculation block.
             article = _insert_illustrative_images(article)
 
-            # Embed any videos the drafting model matched from the source
-            # (see rule 4d in DRAFT_SYSTEM_PROMPT).
-            article = _insert_video_embeds(article)
-
             # Append the "Latest Posts" block
             _append_latest_posts_block(article, latest_posts)
 
             # Convert to real Gutenberg blocks (keeps the post editable in the
             # block editor) with the medium font size applied per-paragraph
             article["content_html"] = _blockify(article["content_html"], ARTICLE_FONT_SIZE_PX)
+
+            # Embed any videos the drafting model matched from the source
+            # (see rule 4d in DRAFT_SYSTEM_PROMPT). Must run AFTER
+            # _blockify() -- see the docstring on _insert_video_embeds for
+            # why.
+            article = _insert_video_embeds(article)
 
             try:
                 result = create_post(article, category_id=category_id, featured_media_id=featured_media_id)
