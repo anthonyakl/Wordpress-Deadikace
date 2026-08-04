@@ -164,10 +164,10 @@ def download_image_bytes(image_url, max_bytes=8_000_000):
 
 def enrich_topic_with_full_text(topic, max_sources=4):
     """
-    Mutates topic['items'] in place, adding 'full_text' and 'image_url' keys
-    to up to max_sources of them (the top outlets covering the story). Items
-    that fail to fetch simply keep full_text=None/image_url=None, and
-    drafting falls back to the RSS summary for those.
+    Mutates topic['items'] in place, adding 'full_text', 'image_url', and
+    'video_embeds' keys to up to max_sources of them (the top outlets
+    covering the story). Items that fail to fetch simply keep these as
+    None/empty, and drafting falls back to the RSS summary for those.
     """
     fetched_count = 0
     for item in topic["items"]:
@@ -175,6 +175,7 @@ def enrich_topic_with_full_text(topic, max_sources=4):
             item["full_text"] = None
             item["image_url"] = None
             item["image_caption"] = None
+            item["video_embeds"] = []
             continue
         html = _fetch_html(item["link"])
         if html:
@@ -185,10 +186,63 @@ def enrich_topic_with_full_text(topic, max_sources=4):
                 text = None
             item["full_text"] = text.strip()[:5000] if text else None
             item["image_url"], item["image_caption"] = fetch_source_image_url(item["link"], html=html)
+            item["video_embeds"] = extract_video_embeds(html)
         else:
             item["full_text"] = None
             item["image_url"] = None
             item["image_caption"] = None
+            item["video_embeds"] = []
         if item["full_text"]:
             fetched_count += 1
     return topic
+
+def extract_video_embeds(html):
+    """
+    Extracts YouTube video links embedded in the source article, along
+    with the nearest preceding <h2>/<h3> heading text (used to match each
+    video to the right section when the drafting model restructures the
+    article under its own headings). Returns a list of
+    {"url": ..., "heading": ...} dicts, deduplicated by video ID. Only
+    YouTube is handled for now, since it's by far the most common
+    platform for the kind of archival live-performance clips this blog
+    covers.
+    """
+    results = []
+    seen_ids = set()
+
+    for m in re.finditer(
+        r'<iframe[^>]+src=["\']https?://(?:www\.)?youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{6,})[^"\']*["\']',
+        html, re.IGNORECASE,
+    ):
+        video_id = m.group(1)
+        if video_id in seen_ids:
+            continue
+        seen_ids.add(video_id)
+        results.append({
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "heading": _nearest_preceding_heading(html, m.start()),
+        })
+
+    for m in re.finditer(
+        r'https?://(?:www\.)?(?:youtube\.com/watch\?v=([A-Za-z0-9_-]{6,})|youtu\.be/([A-Za-z0-9_-]{6,}))',
+        html, re.IGNORECASE,
+    ):
+        video_id = m.group(1) or m.group(2)
+        if video_id in seen_ids:
+            continue
+        seen_ids.add(video_id)
+        results.append({
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "heading": _nearest_preceding_heading(html, m.start()),
+        })
+
+    return results
+
+def _nearest_preceding_heading(html, pos):
+    """Finds the text of the closest <h2>/<h3> heading before position pos in html."""
+    preceding = html[:pos]
+    matches = list(re.finditer(r"<h[23][^>]*>(.*?)</h[23]>", preceding, re.IGNORECASE | re.DOTALL))
+    if not matches:
+        return None
+    text = re.sub(r"<[^>]+>", " ", matches[-1].group(1))
+    return " ".join(text.split())
