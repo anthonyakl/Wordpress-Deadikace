@@ -204,6 +204,24 @@ outlets' coverage as their source material.
     for extra images beyond the featured image (e.g. a very short news
     brief), return an empty illustrative_images array rather than forcing
     irrelevant ones in.
+4d. EMBED VIDEOS FROM THE SOURCE: if any source block above lists
+    "Videos embedded in this source", include EVERY one of those videos
+    in video_embeds, using the exact URL given -- never invent a URL and
+    never skip a video just to save space. Set placement_after_heading to
+    whichever heading in YOUR OWN article structure covers that same
+    item; use the video's listed "near heading" text as a hint for which
+    item it belongs to, since the source's heading wording may differ
+    from yours.
+4e. COVER EVERY ITEM IN A ROUNDUP/LIST SOURCE: if the source material is
+    a roundup-style article covering multiple distinct items (e.g. "12
+    live performances just uploaded", "10 albums you need to hear"),
+    your article must cover EVERY item from the source, not a subset --
+    dropping items because there are many of them is not acceptable, and
+    is different from rule 0's story-splitting (which is about
+    separating UNRELATED stories, not trimming a single list). A shorter
+    per-item treatment is fine if needed to fit them all in, but every
+    item must appear.
+
 5. TITLE STYLE: the title must be specific, accurate, AND genuinely
    eye-catching / SEO-optimized -- not a dry, academic-sounding
    description of the article's topic. Avoid vague, report-style
@@ -241,6 +259,12 @@ outlets' coverage as their source material.
       "query": "string, a SPECIFIC multi-word Wikimedia Commons search naming exactly what the image should show -- e.g. 'Similitude of a Dream album cover Neal Morse Band', not just 'Neal Morse Band' or 'Similitude of a Dream'. A bare band/artist name is too ambiguous (it can match an unrelated same-named subject, like an actual eagle for the band Eagles) -- always combine the specific thing (album, venue, event, person) with enough context words to disambiguate it.",
       "placement_after_heading": "string, the exact text of the <h2> heading in content_html after which this image should be inserted, or \"\" to place it roughly in the middle of the article if there's no natural heading to anchor to",
       "caption": "string, a short factual caption for the image, e.g. the album title and artist, or what's shown"
+    }}
+  ],
+  "video_embeds": [
+    {{
+      "url": "string, one of the exact video URLs listed under a source's \"Videos embedded in this source\" block above -- never invent or guess a video URL",
+      "placement_after_heading": "string, the exact text of the <h2> heading in content_html after which this video should be embedded -- match it to whichever heading in YOUR article covers the same item/performance the video is of"
     }}
   ]
 }}
@@ -469,6 +493,14 @@ def _build_source_material(topic):
     full_text_count = 0
     for i, item in enumerate(topic["items"], start=1):
         full_text = item.get("full_text")
+        video_embeds = item.get("video_embeds") or []
+        video_lines = ""
+        if video_embeds:
+            video_list = "\n".join(
+                f"  - {v['url']}" + (f" (near heading: \"{v['heading']}\")" if v.get("heading") else "")
+                for v in video_embeds
+            )
+            video_lines = f"\nVideos embedded in this source:\n{video_list}"
         if full_text:
             full_text_count += 1
             source_blocks.append(
@@ -476,6 +508,7 @@ def _build_source_material(topic):
                 f"Title: {item['title']}\n"
                 f"Full text: {full_text}\n"
                 f"Link: {item['link']}"
+                f"{video_lines}"
             )
         else:
             source_blocks.append(
@@ -483,6 +516,7 @@ def _build_source_material(topic):
                 f"Title: {item['title']}\n"
                 f"Summary: {item['summary']}\n"
                 f"Link: {item['link']}"
+                f"{video_lines}"
             )
     return "\n\n".join(source_blocks), full_text_count
 
@@ -504,7 +538,7 @@ def draft_article(topic):
         "sources above. Respond with ONLY the JSON array, no other text."
     )
 
-    raw_text = _call_llm(DRAFT_SYSTEM_PROMPT, user_prompt, max_tokens=4000)
+    raw_text = _call_llm(DRAFT_SYSTEM_PROMPT, user_prompt, max_tokens=8000)
     raw_text = _clean_json_text(raw_text)
 
     try:
@@ -601,7 +635,7 @@ def verify_and_refine(article, topic):
     )
 
     try:
-        raw_text = _call_llm(VERIFY_SYSTEM_PROMPT, user_prompt, max_tokens=4000)
+        raw_text = _call_llm(VERIFY_SYSTEM_PROMPT, user_prompt, max_tokens=8000)
         raw_text = _clean_json_text(raw_text)
         result = json.loads(raw_text)
         corrected_html = result["content_html"]
