@@ -173,6 +173,56 @@ def _insert_illustrative_images(article):
     article["content_html"] = content_html
     return article
 
+def _insert_video_embeds(article):
+    """
+    Processes article["video_embeds"] (proposed by the drafting model --
+    see rule 4d in DRAFT_SYSTEM_PROMPT): splices each YouTube URL into
+    content_html as its own paragraph at the requested position (right
+    after the named H2 heading, or mid-article as a fallback). A bare
+    URL on its own line is WordPress's standard oEmbed pattern -- the
+    the_content filter chain auto-embeds it into a playable video on the
+    frontend, the same way the source article's own embeds work, without
+    needing to hand-build embed block markup here.
+    """
+    video_list = article.get("video_embeds") or []
+    if not video_list:
+        return article
+
+    content_html = article["content_html"]
+
+    for video in video_list:
+        url = (video.get("url") or "").strip()
+        if not url:
+            continue
+
+        embed_html = f'<p>{url}</p>'
+
+        heading = (video.get("placement_after_heading") or "").strip()
+        inserted = False
+        if heading:
+            heading_match = re.search(
+                r"(<h2[^>]*>\s*" + re.escape(heading) + r"\s*</h2>)",
+                content_html, re.IGNORECASE,
+            )
+            if heading_match:
+                insert_pos = heading_match.end()
+                content_html = content_html[:insert_pos] + embed_html + content_html[insert_pos:]
+                inserted = True
+        if not inserted:
+            paragraphs = list(re.finditer(r"</p>", content_html, re.IGNORECASE))
+            if paragraphs:
+                mid = paragraphs[len(paragraphs) // 2]
+                insert_pos = mid.end()
+                content_html = content_html[:insert_pos] + embed_html + content_html[insert_pos:]
+            else:
+                content_html += embed_html
+
+        print(f"[info] Embedded video {url} "
+              f"({'after heading' if inserted else 'mid-article fallback'}).")
+
+    article["content_html"] = content_html
+    return article
+
 def _append_latest_posts_block(article, latest_posts):
     if not latest_posts:
         return
@@ -343,6 +393,10 @@ def run():
             # "Latest Posts" block so images land within the article body,
             # not after the recirculation block.
             article = _insert_illustrative_images(article)
+
+            # Embed any videos the drafting model matched from the source
+            # (see rule 4d in DRAFT_SYSTEM_PROMPT).
+            article = _insert_video_embeds(article)
 
             # Append the "Latest Posts" block
             _append_latest_posts_block(article, latest_posts)
