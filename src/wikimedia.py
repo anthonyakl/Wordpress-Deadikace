@@ -91,11 +91,20 @@ def search_commons_image(query):
     if not candidates:
         return None
 
-    candidates.sort(key=lambda c: (not c["extreme_shape"], c["relevance"]), reverse=True)
+    # Only ever pick a candidate whose title has SOME word in common with
+    # the query. A zero-relevance match means Commons' search returned
+    # something for unrelated reasons (a tag, a description snippet,
+    # etc.) with nothing to confirm it's actually the right subject --
+    # better to skip the image entirely than risk an unrelated one (e.g.
+    # a museum photo of an artist's guitar when the query asked for a
+    # performance shot). Among relevant candidates, prefer a normal
+    # (non-extreme) aspect ratio.
+    relevant = [c for c in candidates if c["relevance"] > 0]
+    if not relevant:
+        return None
 
-    best = candidates[0]
-    if best["relevance"] == 0 and any(c["relevance"] > 0 for c in candidates):
-        best = next(c for c in candidates if c["relevance"] > 0)
+    relevant.sort(key=lambda c: (not c["extreme_shape"], c["relevance"]), reverse=True)
+    best = relevant[0]
 
     page, info = best["page"], best["info"]
     extmeta = info.get("extmetadata", {})
