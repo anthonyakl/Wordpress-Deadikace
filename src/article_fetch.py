@@ -176,6 +176,7 @@ def enrich_topic_with_full_text(topic, max_sources=4):
             item["image_url"] = None
             item["image_caption"] = None
             item["video_embeds"] = []
+            item["body_images"] = []
             continue
         html = _fetch_html(item["link"])
         if html:
@@ -187,14 +188,30 @@ def enrich_topic_with_full_text(topic, max_sources=4):
             item["full_text"] = text.strip()[:5000] if text else None
             item["image_url"], item["image_caption"] = fetch_source_image_url(item["link"], html=html)
             item["video_embeds"] = extract_video_embeds(html)
+            item["body_images"] = extract_body_images(html, exclude_url_fragment=item["image_url"])
         else:
             item["full_text"] = None
             item["image_url"] = None
             item["image_caption"] = None
             item["video_embeds"] = []
+            item["body_images"] = []
         if item["full_text"]:
             fetched_count += 1
     return topic
+
+def _extract_article_body_html(html):
+    """
+    Best-effort isolation of just the article body HTML, so video/heading
+    extraction doesn't wander into sidebars, "related articles", or
+    "you might also like" widgets elsewhere on the page. Those sections
+    often contain embedded videos for a COMPLETELY different story (this
+    is exactly how an unrelated video ended up attached to an article
+    about a different artist entirely) -- scoping to <article> avoids
+    picking those up. Falls back to the full page if no <article> tag is
+    found, since that's still better than extracting nothing.
+    """
+    match = re.search(r"<article[^>]*>(.*?)</article>", html, re.IGNORECASE | re.DOTALL)
+    return match.group(1) if match else html
 
 def extract_video_embeds(html):
     """
@@ -205,8 +222,11 @@ def extract_video_embeds(html):
     {"url": ..., "heading": ...} dicts, deduplicated by video ID. Only
     YouTube is handled for now, since it's by far the most common
     platform for the kind of archival live-performance clips this blog
-    covers.
+    covers. Scoped to the article body only (see
+    _extract_article_body_html) so sidebar/recommended-video widgets for
+    unrelated stories don't get swept in.
     """
+    html = _extract_article_body_html(html)
     results = []
     seen_ids = set()
 
@@ -234,6 +254,58 @@ def extract_video_embeds(html):
         results.append({
             "url": f"https://www.youtube.com/watch?v={video_id}",
             "heading": _nearest_preceding_heading(html, m.start()),
+        })
+
+    return results
+
+def extract_body_images(html, exclude_url_fragment=None, max_images=4):
+    """
+    Extracts additional <img> candidates from within the article body
+    (see _extract_article_body_html), paired with the nearest preceding
+    heading and any alt/caption text. Wikimedia Commons frequently has
+    no free-licensed equivalent for things like an official tour poster
+    or promotional artwork -- this gives the drafting model a
+    second, source-backed option for that case (same copyright tradeoff
+    already accepted for the featured image; see the IMAGE SOURCING NOTE
+    in main.py). exclude_url_fragment can be used to skip an image
+    already used elsewhere (e.g. the featured image), to avoid offering
+    it twice. Skips obviously-decorative tiny images (icons, spacers)
+    via a minimum width/height check where that's available in the
+    markup, and stops once max_images plausible candidates are found.
+    """
+    body_html = _extract_article_body_html(html)
+    results = []
+    seen_srcs = set()
+
+    for m in re.finditer(r"<img[^>]+>", body_html, re.IGNORECASE):
+        if len(results) >= max_images:
+            break
+        tag = m.group(0)
+
+        src_match = re.search(r'src=["\']([^"\']+)["\']', tag, re.IGNORECASE)
+        if not src_match:
+            continue
+        src = src_match.group(1)
+        if src in seen_srcs:
+            continue
+        if exclude_url_fragment and exclude_url_fragment in src:
+            continue
+
+        width_match = re.search(r'width=["\']?(\d+)', tag, re.IGNORECASE)
+        height_match = re.search(r'height=["\']?(\d+)', tag, re.IGNORECASE)
+        if width_match and int(width_match.group(1)) < 200:
+            continue
+        if height_match and int(height_match.group(1)) < 150:
+            continue
+
+        alt_match = re.search(r'alt=["\']([^"\']*)["\']', tag, re.IGNORECASE)
+        alt_text = alt_match.group(1).strip() if alt_match else ""
+
+        seen_srcs.add(src)
+        results.append({
+            "url": src,
+            "alt": alt_text,
+            "heading": _nearest_preceding_heading(body_html, m.start()),
         })
 
     return results
