@@ -221,6 +221,16 @@ outlets' coverage as their source material.
     separating UNRELATED stories, not trimming a single list). A shorter
     per-item treatment is fine if needed to fit them all in, but every
     item must appear.
+4f. PREFER SOURCE-BODY IMAGES FOR PROMOTIONAL/COVER ART: if a source
+    lists "Other images in this source's article body", check whether
+    any of them is what the article is actually about showing (e.g. an
+    official tour poster, an album cover, promotional artwork for an
+    event). Wikimedia Commons frequently has no free-licensed version of
+    this kind of copyrighted promotional material, so illustrative_images
+    (Wikimedia search) will often come up empty for exactly this case --
+    when that's what the article calls for, use source_images instead of
+    (or alongside) a Wikimedia search. Match the image to what its alt
+    text or nearby heading suggests it depicts; never guess.
 
 5. TITLE STYLE: the title must be specific, accurate, AND genuinely
    eye-catching / SEO-optimized -- not a dry, academic-sounding
@@ -265,6 +275,13 @@ outlets' coverage as their source material.
     {{
       "url": "string, one of the exact video URLs listed under a source's \"Videos embedded in this source\" block above -- never invent or guess a video URL",
       "placement_after_heading": "string, the exact text of the <h2> heading in content_html after which this video should be embedded -- match it to whichever heading in YOUR article covers the same item/performance the video is of"
+    }}
+  ],
+  "source_images": [
+    {{
+      "url": "string, one of the exact image URLs listed under a source's \"Other images in this source's article body\" block above -- never invent or guess a URL, and never reuse the same URL already used as the featured image",
+      "placement_after_heading": "string, the exact text of the <h2> heading in content_html after which this image should be inserted",
+      "caption": "string, a short factual caption for the image"
     }}
   ]
 }}
@@ -504,6 +521,16 @@ def _build_source_material(topic):
                 for v in video_embeds
             )
             video_lines = f"\nVideos embedded in this source:\n{video_list}"
+        body_images = item.get("body_images") or []
+        image_lines = ""
+        if body_images:
+            image_list = "\n".join(
+                f"  - {img['url']}"
+                + (f" (alt text: \"{img['alt']}\")" if img.get("alt") else "")
+                + (f" (near heading: \"{img['heading']}\")" if img.get("heading") else "")
+                for img in body_images
+            )
+            image_lines = f"\nOther images in this source's article body:\n{image_list}"
         if full_text:
             full_text_count += 1
             source_blocks.append(
@@ -512,6 +539,7 @@ def _build_source_material(topic):
                 f"Full text: {full_text}\n"
                 f"Link: {item['link']}"
                 f"{video_lines}"
+                f"{image_lines}"
             )
         else:
             source_blocks.append(
@@ -520,6 +548,7 @@ def _build_source_material(topic):
                 f"Summary: {item['summary']}\n"
                 f"Link: {item['link']}"
                 f"{video_lines}"
+                f"{image_lines}"
             )
     return "\n\n".join(source_blocks), full_text_count
 
