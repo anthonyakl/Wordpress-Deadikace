@@ -249,6 +249,80 @@ def _insert_video_embeds(article):
     article["content_html"] = content_html
     return article
 
+def _insert_source_images(article):
+    """
+    Processes article["source_images"] (proposed by the drafting model --
+    see rule 4f in DRAFT_SYSTEM_PROMPT): downloads each image directly
+    from the source article's own body and inserts it into content_html
+    at the requested position. Used for things like tour posters or
+    promotional artwork that Wikimedia Commons usually has no
+    free-licensed equivalent for -- same copyright tradeoff already
+    accepted for the featured image (see the IMAGE SOURCING NOTE in this
+    file). Mirrors _insert_illustrative_images()'s insertion logic, just
+    sourcing the image bytes directly from the source URL instead of a
+    Wikimedia Commons search.
+    """
+    source_image_list = article.get("source_images") or []
+    if not source_image_list:
+        return article
+
+    content_html = article["content_html"]
+
+    for img_entry in source_image_list:
+        url = (img_entry.get("url") or "").strip()
+        if not url:
+            continue
+
+        image_bytes, content_type = download_image_bytes(url)
+        if not image_bytes:
+            print(f"[warn] Failed to download source-body image {url}; skipping.")
+            continue
+
+        caption = (img_entry.get("caption") or "").strip()
+        try:
+            media = upload_media(
+                image_bytes,
+                filename=article["title"],
+                alt_text=caption or "Photo via source article",
+                content_type=content_type,
+            )
+        except Exception as e:
+            print(f"[warn] Failed to upload source-body image to WordPress media library: {e}")
+            continue
+        if not media:
+            continue
+
+        figure_html = f'<figure class="wp-block-image size-large"><img src="{media["source_url"]}" alt="{caption}"/>'
+        if caption:
+            figure_html += f'<figcaption>{caption}</figcaption>'
+        figure_html += '</figure>'
+
+        heading = (img_entry.get("placement_after_heading") or "").strip()
+        inserted = False
+        if heading:
+            heading_match = re.search(
+                r"(<h2[^>]*>\s*" + re.escape(heading) + r"\s*</h2>)",
+                content_html, re.IGNORECASE,
+            )
+            if heading_match:
+                insert_pos = heading_match.end()
+                content_html = content_html[:insert_pos] + figure_html + content_html[insert_pos:]
+                inserted = True
+        if not inserted:
+            paragraphs = list(re.finditer(r"</p>", content_html, re.IGNORECASE))
+            if paragraphs:
+                mid = paragraphs[len(paragraphs) // 2]
+                insert_pos = mid.end()
+                content_html = content_html[:insert_pos] + figure_html + content_html[insert_pos:]
+            else:
+                content_html += figure_html
+
+        print(f"[info] Inserted source-body image {url} "
+              f"({'after heading' if inserted else 'mid-article fallback'}).")
+
+    article["content_html"] = content_html
+    return article
+
 def _append_latest_posts_block(article, latest_posts):
     if not latest_posts:
         return
@@ -420,6 +494,11 @@ def run():
             # "Latest Posts" block so images land within the article body,
             # not after the recirculation block.
             article = _insert_illustrative_images(article)
+
+            # Insert any source-body images the drafting model proposed
+            # (see rule 4f in DRAFT_SYSTEM_PROMPT) -- e.g. promotional
+            # artwork Wikimedia had no free-licensed version of.
+            article = _insert_source_images(article)
 
             # Append the "Latest Posts" block
             _append_latest_posts_block(article, latest_posts)
