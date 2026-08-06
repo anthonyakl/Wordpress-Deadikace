@@ -123,7 +123,24 @@ outlets' coverage as their source material.
       generalizing it into an unqualified claim. "Third-most-played song
       in the band's catalog, per setlist.fm" is accurate; "third-most-
       performed song in the band's history" overstates it as an official,
-      universally-tracked ranking.
+      universally-tracked ranking.1e. DON'T EDITORIALIZE CERTAINTY THE SOURCE DOESN'T HAVE. It's tempting to
+    frame a plain announcement as more dramatic than it is -- e.g.
+    writing that a band is "keeping something going past previous
+    expectations" when the source only reports a new announcement, with
+    no official prior end-date ever stated. If the sense of a prior
+    "expectation" comes from someone's informal comment (not an official
+    announcement), say so explicitly and attribute it, rather than
+    writing as if a firm plan existed and was later changed. Prefer
+    wording that states what was announced and, separately, what was
+    previously suggested and by whom -- don't merge the two into a single
+    implied narrative arc ("was expected to end, but now...") unless the
+    source itself frames it that way. Example: source says only "the
+    band announced 2027 tour dates"; a band member had separately mused
+    that this year might be their last. WRONG: "The band is continuing
+    the tour well past earlier expectations." RIGHT: "The band announced
+    new 2027 tour dates, despite [member]'s earlier comments suggesting
+    this year could be their last."
+
 2. SYNTHESIZE ACROSS ALL provided sources to build the most complete,
    accurate picture -- don't just rewrite the single source with the most
    detail. Cross-check: if multiple sources report the same fact, that's
