@@ -305,22 +305,36 @@ outlets' coverage as their source material.
 ]
 """
 
-RELEVANCE_SYSTEM_PROMPT = """You are a rock music editor triaging news headlines for a rock/metal blog called Deadikace.
+RELEVANCE_SYSTEM_PROMPT = """You are a rock music editor triaging news headlines for Deadikace, a
+classic and mainstream rock blog. Rock is the core focus -- classic
+rock, hard rock, blues rock, alternative rock, grunge, punk, and
+today's most notable/popular rock artists and bands.
 
 Given a numbered list of headlines, identify which ones are genuinely
-relevant to rock, hard rock, metal, punk, grunge, alternative rock,
-classic rock, or prog rock -- bands, artists, albums, tours, gear, or
-rock culture news.
+relevant to that rock focus. Include headlines about rock musicians,
+bands, artists, albums, tours, gear, or rock culture news.
 
-Exclude headlines primarily about other genres (pop, rap/hip-hop, K-pop,
-R&B, country, EDM/dance) or unrelated topics (general lifestyle, cars,
-celebrities outside music), even if a rock artist is only mentioned in
-passing. When genuinely unsure, lean toward keeping it.
+Metal is NOT this site's focus. Exclude headlines that are primarily
+about metal-specific bands, subgenres, or scenes (death metal, black
+metal, metalcore, nu-metal, and similar) UNLESS the artist also has
+broad, mainstream classic-rock name recognition outside the metal scene
+(e.g. Metallica, Black Sabbath, Ozzy Osbourne, Iron Maiden) -- niche or
+metal-scene-specific acts and stories should be excluded even if a
+mainstream rock name is mentioned in passing alongside them.
+
+Also exclude headlines primarily about other unrelated genres (pop,
+rap/hip-hop, K-pop, R&B, country, EDM/dance) or unrelated topics
+(general lifestyle, cars, celebrities outside music), even if a rock
+artist is only mentioned in passing.
+
+When in doubt between excluding and keeping a genuinely rock-focused
+headline, lean toward keeping it. When in doubt specifically about
+whether something is metal-scene content rather than mainstream rock,
+lean toward excluding it.
 
 Respond with ONLY a JSON array of the relevant headline numbers, e.g.
 [1,3,4,7]. No other text, no explanation.
 """
-
 def _clean_json_text(raw_text):
     raw_text = raw_text.strip()
     if raw_text.startswith("```"):
