@@ -453,8 +453,15 @@ def filter_duplicate_topics(topics, existing_posts):
     if not topics or not existing_posts:
         return topics
 
+    def _topic_snippet(t):
+        first = t["items"][0]
+        snippet = (first.get("full_text") or first.get("summary") or "")
+        snippet = " ".join(snippet.split())[:200]
+        return snippet
+
     candidate_list = "\n".join(
         f"{i + 1}. " + " / ".join(item["title"] for item in t["items"][:3])
+        + (f" -- {_topic_snippet(t)}" if _topic_snippet(t) else "")
         for i, t in enumerate(topics)
     )
     existing_list = "\n".join(
@@ -486,22 +493,30 @@ WITHIN_BATCH_DUPLICATE_SYSTEM_PROMPT = """You are an editor for Deadikace,
 a rock music blog, checking a batch of candidate news topics against EACH
 OTHER (not against older posts) to catch cases where the same underlying
 story was picked up by the topic clustering step as two or more separate
-candidates -- this happens when different outlets word the same story
-differently enough (e.g. one outlet leads with "artist reveals health
-scare", another leads with a specific quote from the same interview) that
+topics -- e.g. two different outlets covering the same news with
+different headlines, or one leads with "artist reveals health scare",
+another leads with a specific quote from the same interview -- that
 simple keyword-overlap clustering treats them as unrelated.
 
-For each numbered candidate topic below, decide whether it covers the SAME
-underlying news story/event as any EARLIER-numbered candidate in this same
-list. Two candidates about the same band/artist but genuinely different
-news (e.g. a tour announcement and, separately, an album review) are NOT
-duplicates -- only flag candidates that are actually the same story.
+For each numbered candidate topic below, decide whether it covers the
+SAME underlying news story/event as any OTHER candidate in this same
+list. Use the short snippet given after each title, not just the title
+-- headlines for the same story are often worded completely differently,
+but the actual content described will match. If you are genuinely
+unsure whether two candidates are the same story, treat them as
+duplicates -- publishing two near-identical articles in the same run is
+a worse outcome than merging two topics that turn out to have been
+slightly different angles on the same news.
 
-Respond with ONLY a JSON array of the candidate numbers that are
-duplicates of an earlier candidate in this list (i.e. should be dropped,
-keeping only the earlier one), e.g. [3,5]. Respond with [] if none are
-duplicates. No other text.
+When you find a group of duplicates, keep only the one with the most
+detail (prefer the one with a longer snippet / more source items) and
+mark the others as duplicates to remove.
+
+Respond with ONLY a JSON array of the candidate numbers to REMOVE (i.e.
+the duplicates, not the one being kept), e.g. [2,5]. Respond with []
+if there are no duplicates. No other text.
 """
+
 
 def dedupe_topics_within_batch(topics):
     """
@@ -518,8 +533,15 @@ def dedupe_topics_within_batch(topics):
     if not topics or len(topics) < 2:
         return topics
 
+    def _within_batch_snippet(t):
+        first = t["items"][0]
+        snippet = (first.get("full_text") or first.get("summary") or "")
+        snippet = " ".join(snippet.split())[:200]
+        return snippet
+
     candidate_list = "\n".join(
         f"{i + 1}. " + " / ".join(item["title"] for item in t["items"][:3])
+        + (f" -- {_within_batch_snippet(t)}" if _within_batch_snippet(t) else "")
         for i, t in enumerate(topics)
     )
     user_prompt = f"Candidate topics:\n{candidate_list}\n\nReturn the JSON array of duplicate candidate numbers now."
