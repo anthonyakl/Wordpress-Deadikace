@@ -8,7 +8,6 @@ import json
 import re
 from datetime import datetime, timezone, timedelta
 
-import requests
 from requests.auth import HTTPBasicAuth
 
 import config
@@ -148,7 +147,6 @@ draft.filter_duplicate_topics = _dedupe_with_existing
 def _within_batch(topics):
     if len(topics) < 2:
         return topics
-    # Build a temporary peer list and ask the same strict story-identity editor.
     peer_lines = "\n".join(f"{i}. {_candidate_text(t)}" for i, t in enumerate(topics, 1))
     system = STORY_SYSTEM + "\nHere the comparison set is the other candidates in this same run. Return numbers to remove, keeping the most detailed candidate."
     try:
@@ -200,6 +198,49 @@ def _research_with_connections(topic):
 draft.research_additional_context = _research_with_connections
 
 
+VALUE_SYSTEM = """You are the editorial value gate for Deadikace. Decide whether this
+candidate has enough genuine material to justify a substantial original article.
+Do NOT reward word count. Judge what Deadikace can add beyond the immediate competitor
+coverage.
+
+Score 0-10. Consider: independently researched facts; useful related-story
+connections; career/discography/history context that directly explains the news;
+documented implications or analysis; and whether the combination gives the reader a
+reason to read Deadikace rather than the original source.
+
+A story based mainly on one competitor article, with only paraphrased facts and
+generic biography, should score low. A genuinely useful news development can score
+high even if concise. If meaningful added value is not available, reject it.
+
+Return ONLY JSON: {"score":0-10,"reason":"brief reason"}."""
+
+_orig_draft_article = draft.draft_article
+
+
+def _draft_with_value_gate(topic):
+    if getattr(config, "ENABLE_DEEP_RESEARCH", True):
+        try:
+            material, _ = draft._build_source_material(topic)
+            research = topic.get("research_notes") or "NONE"
+            raw = _call_editor(VALUE_SYSTEM, f"Topic: {topic['items'][0]['title']}\n\nSource material:\n{material}\n\nIndependent research:\n{research}", 600)
+            result = json.loads(raw)
+            score = int(result.get("score", 0))
+            print(f"[info] Editorial-value score: {score}/10 -- {result.get('reason','')}")
+            if score < config.MIN_EDITORIAL_VALUE_SCORE:
+                print(f"[info] Skipping low-value story before drafting (score {score} < {config.MIN_EDITORIAL_VALUE_SCORE}).")
+                return []
+        except Exception as exc:
+            print(f"[fatal] Editorial-value gate failed; rejecting topic for safety: {exc}")
+            return []
+    articles = _orig_draft_article(topic)
+    return articles
+
+
+draft.draft_article = _draft_with_value_gate
+
+
+# The writer remains a news writer, but may add evidence-based editorial context and
+# relevant connections. It must never manufacture opinions or consensus.
 draft.DRAFT_SYSTEM_PROMPT += """
 
 EDITORIAL CONTEXT AND CONNECTIONS:
@@ -234,13 +275,33 @@ def _story_id_for_article(article):
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:20]
 
 
+def _article_probe(article):
+    return {
+        "title": article.get("title", ""),
+        "excerpt": re.sub(r"<[^>]+>", " ", article.get("content_html", ""))[:1200],
+    }
+
+
+def _semantic_article_duplicate(article, existing):
+    if not existing:
+        return False
+    existing_lines = "\n".join(f"- {p['title']} -- {p['excerpt']}" for p in existing)
+    try:
+        raw = _call_editor(
+            STORY_SYSTEM,
+            f"Candidate article:\n- {article.get('title','')} -- {article.get('excerpt','')}\n\nExisting Deadikace posts/drafts:\n{existing_lines}\n\nReturn [1] only if the candidate is the same underlying story as an existing item; otherwise return [].",
+            1000,
+        )
+        return 1 in {int(x) for x in json.loads(raw)}
+    except Exception as exc:
+        print(f"[fatal] Final article duplicate check failed; refusing to create the post: {exc}")
+        return True
+
+
 def _final_create(article, category_id=None, featured_media_id=None):
     existing = _wp_recent_all()
-    # The final check is intentionally independent of the initial candidate check.
-    # This closes the race where another workflow run created the same story while
-    # this run was researching/drafting it.
-    probe = [{"title": article.get("title", ""), "excerpt": re.sub(r"<[^>]+>", " ", article.get("content_html", ""))[:1200]}]
-    if _semantic_dedupe(probe, existing) == []:
+    probe = _article_probe(article)
+    if _semantic_article_duplicate(probe, existing):
         raise RuntimeError(f"Final idempotency guard rejected likely duplicate: {article.get('title','')}")
 
     result = _orig_create(article, category_id=category_id, featured_media_id=featured_media_id)
