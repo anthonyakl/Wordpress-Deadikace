@@ -1,22 +1,17 @@
 """
 Central configuration for the Deadikace auto-publishing agent.
+
 Secrets (API keys, WP credentials) are read from environment variables --
 never hardcode them here. See .env.example / GitHub Secrets setup in README.
 """
 
 import os
 
+
 def _env(key, default=""):
-    """
-    Like os.environ.get, but also falls back to `default` when the
-    variable is present but empty. This matters because GitHub Actions
-    sets an env var to an empty string (not "unset") whenever a workflow
-    references a secret that doesn't exist or was left blank -- plain
-    os.environ.get(key, default) would silently use "" instead of the
-    intended default in that case.
-    """
     val = os.environ.get(key)
     return val if val not in (None, "") else default
+
 
 def _env_int(key, default):
     val = _env(key, "")
@@ -28,125 +23,100 @@ def _env_int(key, default):
         print(f"[warn] Env var {key}={val!r} is not a valid integer; using default {default}.")
         return default
 
+
 def _env_bool(key, default):
     val = _env(key, "")
     if val == "":
         return default
     return val.strip().lower() in ("1", "true", "yes", "on")
 
+
 def _env_list(key, default_csv):
     val = _env(key, default_csv)
     return [item.strip() for item in val.split(",") if item.strip()]
 
+
 # --- WordPress site ---
 WP_BASE_URL = _env("WP_BASE_URL", "https://www.deadikace.com")
-WP_USERNAME = os.environ["WP_USERNAME"]  # your WP username
-WP_APP_PASSWORD = os.environ["WP_APP_PASSWORD"]  # WP Application Password (not your login password)
+WP_USERNAME = os.environ["WP_USERNAME"]
+WP_APP_PASSWORD = os.environ["WP_APP_PASSWORD"]
 
 # --- LLM provider selection ---
-# "anthropic" (Claude, paid) or "gemini" (Google, has a free tier)
 LLM_PROVIDER = _env("LLM_PROVIDER", "anthropic").lower()
-
-# --- Anthropic (Claude) API --- only required if LLM_PROVIDER == "anthropic"
 ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY")
 CLAUDE_MODEL = _env("CLAUDE_MODEL", "claude-sonnet-4-6")
-
-# --- Google Gemini API --- only required if LLM_PROVIDER == "gemini"
 GEMINI_API_KEY = _env("GEMINI_API_KEY")
-# "gemini-flash-lite-latest" is Google's auto-updating alias for their
-# current lite model -- it has the most generous free-tier quota (as of
-# writing: 15 requests/min, 1,000/day) and avoids breaking again when
-# Google retires a specific dated model version. Override via the
-# GEMINI_MODEL secret if you want a specific model instead.
 GEMINI_MODEL = _env("GEMINI_MODEL", "gemini-flash-lite-latest")
 
 # --- Behavior ---
-# "publish" = goes live immediately. "draft" = saved in WP for you to review first.
-# Recommended: start with "draft" for a week or two, then switch to "publish".
-POST_STATUS = _env("POST_STATUS", "publish")  # "publish" or "draft"
-
-# Max number of new articles to generate per run
+POST_STATUS = _env("POST_STATUS", "publish")
 MAX_ARTICLES_PER_RUN = _env_int("MAX_ARTICLES_PER_RUN", 2)
-
-# Whether to use the source article's own preview image (og:image) as the
-# featured image, re-hosted on Deadikace. See README.md Step 8 for the
-# copyright tradeoff this involves -- set to false to publish without any
-# featured image instead, which carries no such risk.
 ENABLE_SOURCE_IMAGES = _env_bool("ENABLE_SOURCE_IMAGES", True)
-
-# Whether to run a live web-search research pass on each topic before
-# drafting it, looking for verifiable factual grounding beyond the
-# competitor RSS coverage (catalog/chart data, documented prior
-# statements, established historical background) -- see
-# draft.research_additional_context() and DRAFT_SYSTEM_PROMPT rule 2b.
-# This is what lets articles add genuine depth instead of just
-# resynthesizing the same handful of competitor articles in different
-# words. Uses the same LLM_PROVIDER already configured above (Claude's
-# hosted web-search tool, or Gemini's Google Search grounding) -- no
-# separate search API key needed. Costs a bit more per article (one
-# extra LLM call with search enabled) and, for Anthropic, is billed
-# per search performed -- set to false to draft from competitor RSS
-# coverage only, exactly as the agent behaved before this feature.
 ENABLE_DEEP_RESEARCH = _env_bool("ENABLE_DEEP_RESEARCH", True)
-
-# Max number of individual web searches the research pass may perform
-# per topic. Higher allows deeper research at proportionally higher
-# cost; lower keeps it cheap and fast.
 RESEARCH_MAX_SEARCHES = _env_int("RESEARCH_MAX_SEARCHES", 6)
 
-# A story must appear in at least this many competitor feeds to be
-# considered "trending" enough to write about. Set to 1 to write about
-# anything, 2+ to be more selective and reduce noise.
+# A single-source feed can still surface a valid story, but it must pass the
+# hard editorial genre gate and the later originality/value checks. Cross-
+# outlet coverage remains a ranking signal rather than a requirement.
 MIN_SOURCE_COUNT = _env_int("MIN_SOURCE_COUNT", 1)
-
-# How far back (in hours) to look at competitor feeds for "recent" news
 LOOKBACK_HOURS = _env_int("LOOKBACK_HOURS", 48)
 
 # --- Topic ranking ---
-# Topics are scored as: (source_count * SOURCE_COUNT_WEIGHT) + freshness_score
-# + keyword_bonus (if any PRIORITY_KEYWORDS match). freshness_score decays
-# linearly from LOOKBACK_HOURS (brand new) to 0 (at the edge of the lookback
-# window), so a very recent single-source story can still outrank an older
-# multi-source one. Raise SOURCE_COUNT_WEIGHT to favor breadth of coverage
-# more; lower it to favor recency more.
 SOURCE_COUNT_WEIGHT = _env_int("SOURCE_COUNT_WEIGHT", 10)
-
-# Optional: comma-separated list of favorite bands/artists/genres. Any
-# topic whose headline mentions one gets a scoring boost. Leave empty to
-# disable. Example: "Metallica,Iron Maiden,thrash metal"
 PRIORITY_KEYWORDS = _env_list("PRIORITY_KEYWORDS", "")
 PRIORITY_KEYWORD_BONUS = _env_int("PRIORITY_KEYWORD_BONUS", 15)
 
-# Rolling Stone's RSS feed covers all music genres, not just rock, so
-# without filtering it leaks pop/rap/K-pop stories in. Any entry whose
-# title contains one of these terms is dropped before topics are even
-# clustered. Override via the EXCLUDE_KEYWORDS secret (comma-separated)
-# if you want to adjust the list -- leave it empty to disable filtering.
+# Fast deterministic exclusion before clustering. This is deliberately broad:
+# the LLM classifier remains the semantic gate, but an obvious metal-only story
+# should never reach drafting merely because an LLM call failed or a headline is
+# ambiguous. Keep famous rock/metal crossover artists out of this keyword list;
+# their story-level classification is handled separately.
 EXCLUDE_KEYWORDS = _env_list(
     "EXCLUDE_KEYWORDS",
-    "rap,hip-hop,hip hop,k-pop,kpop,r&b,trap,reggaeton,"
-    "boy band,girl group,country music"
+    "rap,hip-hop,hip hop,k-pop,kpop,r&b,trap,reggaeton,boy band,girl group,country music,"
+    "death metal,black metal,doom metal,sludge metal,thrash metal,power metal,symphonic metal,"
+    "progressive metal,metalcore,deathcore,djent,nu-metal,nu metal,technical death metal,"
+    "brutal death metal,melodic death metal,funeral doom,folk metal,viking metal,"
+    "industrial metal,groove metal,metal festival,metal scene"
 )
 
-# --- WordPress category every agent-generated post is filed under ---
-# Set to exactly match one of your existing category names (case-insensitive).
-# The agent will create it if it somehow doesn't exist yet, but it's meant
-# to match one you already have (e.g. "Latest News").
+# Sources that are overwhelmingly metal-oriented are not allowed to be the sole
+# reason a story is discovered. They can still contribute to a story when other
+# trusted rock-oriented sources independently cover it.
+METAL_HEAVY_SOURCE_NAMES = _env_list("METAL_HEAVY_SOURCE_NAMES", "Loudwire")
+
+# Explicit rock-family taxonomy used by prompts and deterministic safeguards.
+ROCK_GENRES = _env_list(
+    "ROCK_GENRES",
+    "rock,rock and roll,classic rock,hard rock,heavy rock,blues rock,folk rock,"
+    "progressive rock,psychedelic rock,southern rock,garage rock,alternative rock,"
+    "indie rock,punk rock,glam rock,roots rock,country rock,funk rock,art rock,"
+    "grunge,post-punk,post-rock"
+)
+
+METAL_GENRES = _env_list(
+    "METAL_GENRES",
+    "metal,heavy metal,death metal,black metal,doom metal,sludge metal,thrash metal,"
+    "power metal,symphonic metal,progressive metal,metalcore,deathcore,djent,nu-metal,"
+    "industrial metal,groove metal,technical death metal,melodic death metal"
+)
+
+# Existing WP content to compare against. Drafts matter just as much as published
+# posts because the workflow normally creates drafts for review and can be run again.
+DEDUP_LOOKBACK_DAYS = _env_int("DEDUP_LOOKBACK_DAYS", 30)
+DEDUP_MAX_POSTS = _env_int("DEDUP_MAX_POSTS", 150)
+
+# A candidate should not be turned into a substantial article unless the research
+# pass finds enough genuinely new/contextual material. The exact scoring is done by
+# the editorial prompt; these thresholds make the policy explicit and tunable.
+MIN_EDITORIAL_VALUE_SCORE = _env_int("MIN_EDITORIAL_VALUE_SCORE", 5)
+MIN_RESEARCH_VALUE_SCORE = _env_int("MIN_RESEARCH_VALUE_SCORE", 3)
+
 TARGET_CATEGORY = _env("TARGET_CATEGORY", "Latest News")
-
-# --- "Latest posts" block appended to the end of every article ---
 LATEST_POSTS_COUNT = _env_int("LATEST_POSTS_COUNT", 5)
-
-# --- Article body font size ---
-# Many WP themes default post-body text to a small size. This is applied
-# per-paragraph as a real block attribute so it reads comfortably
-# regardless of the theme's default, while staying editable in the block
-# editor. Adjust if it looks too big/small on your theme.
 ARTICLE_FONT_SIZE_PX = _env_int("ARTICLE_FONT_SIZE_PX", 22)
 
 # --- Competitor RSS feeds ---
-# These are used ONLY to detect trending topics (titles/summaries/links).
-# We never scrape or reproduce full competitor article text.
 COMPETITOR_FEEDS = [
     {"name": "Rolling Stone", "url": "https://www.rollingstone.com/music/music-news/feed/"},
     {"name": "Louder Sound", "url": "https://www.loudersound.com/feeds.xml"},
@@ -156,17 +126,17 @@ COMPETITOR_FEEDS = [
     {"name": "Rock Cellar Magazine", "url": "https://rockcellarmagazine.com/category/latest-news/feed/"},
 ]
 
-# --- Site voice / editorial guidelines given to Claude ---
 SITE_VOICE_GUIDELINES = """
 Deadikace is a rock music blog for passionate, knowledgeable fans.
-Voice: enthusiastic but credible, conversational, avoids corporate/listicle
-cliches ("in today's fast-paced music world..."). Assume the reader already
-loves rock music -- don't over-explain basics. Add genuine perspective or
-context, not just a rehash of the news.
+Voice: enthusiastic but credible, conversational, never corporate or generic.
+Assume the reader already loves rock music -- don't over-explain basics.
+The goal is not merely to summarize a source. Add genuinely useful editorial
+context, connections to relevant related developments, historical or career
+context, and analysis when the evidence supports it. A safe, non-controversial
+editorial observation is acceptable occasionally, but never invent an opinion,
+experience, reporting, quote, or consensus. Do not add filler to reach a word count.
 """
 
-# --- Yoast SEO field names (WP REST API) ---
-# These are exposed by the Yoast SEO plugin's REST support once enabled.
 YOAST_TITLE_FIELD = "_yoast_wpseo_title"
 YOAST_META_DESC_FIELD = "_yoast_wpseo_metadesc"
 YOAST_FOCUS_KEYWORD_FIELD = "_yoast_wpseo_focuskw"
