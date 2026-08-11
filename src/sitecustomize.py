@@ -1,11 +1,13 @@
 """Deadikace editorial safety/idempotency layer.
 
-Loaded automatically by Python when src/ is on sys.path. It wraps the existing
-pipeline without replacing the established article/image logic.
+This module is auto-loaded because src/ is on PYTHONPATH. It wraps the existing
+pipeline without replacing the established article generation logic.
 """
 import hashlib
 import json
 import re
+import threading
+import time
 from datetime import datetime, timezone, timedelta
 
 from requests.auth import HTTPBasicAuth
@@ -16,6 +18,43 @@ import wordpress
 
 API_ROOT = f"{config.WP_BASE_URL.rstrip('/')}/wp-json/wp/v2"
 AUTH = HTTPBasicAuth(config.WP_USERNAME, config.WP_APP_PASSWORD)
+
+
+# Gemini's free tier used by the current configuration is limited to 15
+# generate_content requests/minute. The previous safety layer added multiple
+# extra LLM calls per candidate and immediately exhausted that quota. Keep all
+# LLM calls in this process below the provider's limit instead of hammering it.
+_LLM_LOCK = threading.Lock()
+_LAST_LLM_CALL = 0.0
+_LLM_MIN_INTERVAL = 4.25
+
+
+def _rate_limit_llm_call():
+    global _LAST_LLM_CALL
+    with _LLM_LOCK:
+        now = time.monotonic()
+        wait = _LLM_MIN_INTERVAL - (now - _LAST_LLM_CALL)
+        if wait > 0:
+            time.sleep(wait)
+        _LAST_LLM_CALL = time.monotonic()
+
+
+_original_call_llm = draft._call_llm
+_original_call_llm_with_search = draft._call_llm_with_search
+
+
+def _paced_call_llm(*args, **kwargs):
+    _rate_limit_llm_call()
+    return _original_call_llm(*args, **kwargs)
+
+
+def _paced_call_llm_with_search(*args, **kwargs):
+    _rate_limit_llm_call()
+    return _original_call_llm_with_search(*args, **kwargs)
+
+
+draft._call_llm = _paced_call_llm
+draft._call_llm_with_search = _paced_call_llm_with_search
 
 
 def _call_editor(system, prompt, max_tokens=1200):
@@ -53,7 +92,11 @@ def _genre_gate(topics):
         item = t["items"][0]
         lines.append(f"{i}. {item['title']} -- {item.get('summary','')[:500]}")
     try:
-        raw = _call_editor(GENRE_SYSTEM, "Candidates:\n" + "\n".join(lines) + "\n\nReturn passing numbers.", 1200)
+        raw = _call_editor(
+            GENRE_SYSTEM,
+            "Candidates:\n" + "\n".join(lines) + "\n\nReturn passing numbers.",
+            1200,
+        )
         keep = {int(x) - 1 for x in json.loads(raw)}
     except Exception as exc:
         print(f"[fatal] Genre gate failed; rejecting all candidates rather than allowing off-topic content: {exc}")
@@ -86,16 +129,24 @@ def _wp_recent_all(limit=150):
             r = wordpress._session.get(
                 f"{API_ROOT}/posts",
                 params={
-                    "per_page": min(limit, 100), "status": status,
-                    "orderby": "date", "order": "desc",
+                    "per_page": min(limit, 100),
+                    "status": status,
+                    "orderby": "date",
+                    "order": "desc",
                     "_fields": "id,date,status,title,excerpt,content,link",
-                }, auth=AUTH, timeout=wordpress.REQUEST_TIMEOUT,
+                },
+                auth=AUTH,
+                timeout=wordpress.REQUEST_TIMEOUT,
             )
             r.raise_for_status()
             for p in r.json():
                 date_raw = p.get("date") or ""
                 try:
                     dt = datetime.fromisoformat(date_raw.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    else:
+                        dt = dt.astimezone(timezone.utc)
                 except Exception:
                     dt = datetime.now(timezone.utc)
                 if dt < cutoff:
@@ -104,7 +155,13 @@ def _wp_recent_all(limit=150):
                 excerpt = re.sub(r"<[^>]+>", " ", p.get("excerpt", {}).get("rendered", ""))
                 content = p.get("content", {}).get("rendered", "")
                 marker = re.search(r"<!-- deadikace-story:([a-f0-9]{12,40}) -->", content)
-                out.append({"id": p.get("id"), "title": title, "excerpt": " ".join(excerpt.split())[:500], "story_id": marker.group(1) if marker else None, "status": status})
+                out.append({
+                    "id": p.get("id"),
+                    "title": title,
+                    "excerpt": " ".join(excerpt.split())[:500],
+                    "story_id": marker.group(1) if marker else None,
+                    "status": status,
+                })
         except Exception as exc:
             print(f"[warn] Could not fetch WordPress {status} posts for dedup: {exc}")
     seen = set()
@@ -129,7 +186,11 @@ def _semantic_dedupe(topics, existing):
     lines = "\n".join(f"{i}. {_candidate_text(t)}" for i, t in enumerate(topics, 1))
     existing_lines = "\n".join(f"- {p['title']} -- {p['excerpt']}" for p in existing)
     try:
-        raw = _call_editor(STORY_SYSTEM, f"Candidates:\n{lines}\n\nExisting Deadikace posts/drafts:\n{existing_lines}\n\nReturn duplicates.", 1500)
+        raw = _call_editor(
+            STORY_SYSTEM,
+            f"Candidates:\n{lines}\n\nExisting Deadikace posts/drafts:\n{existing_lines}\n\nReturn duplicates.",
+            1500,
+        )
         dup = {int(x) - 1 for x in json.loads(raw)}
     except Exception as exc:
         print(f"[fatal] Persistent duplicate check failed; rejecting all candidates for safety: {exc}")
@@ -161,86 +222,12 @@ def _within_batch(topics):
 draft.dedupe_topics_within_batch = _within_batch
 
 
-RELATED_SYSTEM = """You are doing a second research pass for Deadikace. Find genuinely
-useful connections between this story and RELATED, SPECIFIC developments that make
-the article more interesting to a knowledgeable rock fan. Prefer recent or directly
-relevant connections: an artist's previous release, a related band development, a
-career turning point, a connected tour/album/event, a documented earlier statement,
-or historical context that changes how the current news is understood.
-
-Do NOT add generic biography or trivia. Do NOT force a connection. Every fact needs
-an exact source URL. A connection is valuable only when it helps explain why the
-current story matters or gives the reader a useful next piece of context.
-
-Return a short bulleted research brief. If nothing genuinely useful is found, return
-NONE."""
-
-_orig_research = draft.research_additional_context
+# Do NOT add a second research call here. The existing research_additional_context()
+# already performs the intended independent research pass. The previous safety layer
+# called it and then performed another live-search LLM pass for every candidate,
+# doubling API usage and exhausting Gemini's free-tier quota.
 
 
-def _research_with_connections(topic):
-    _orig_research(topic)
-    if not getattr(config, "ENABLE_DEEP_RESEARCH", True):
-        return topic
-    try:
-        material, _ = draft._build_source_material(topic)
-        headline = topic["items"][0]["title"]
-        prompt = f"Current story: {headline}\n\nExisting research/source material:\n{material}\n\nFind related developments or context now."
-        related = draft._call_llm_with_search(RELATED_SYSTEM, prompt, max_tokens=1800, max_searches=max(3, config.RESEARCH_MAX_SEARCHES // 2))
-        if related and related.strip().upper() != "NONE":
-            existing = topic.get("research_notes") or ""
-            topic["research_notes"] = (existing + "\n\nRELATED CONTEXT AND CONNECTIONS:\n" + related).strip()
-    except Exception as exc:
-        print(f"[warn] Related-context research failed; retaining primary research only: {exc}")
-    return topic
-
-
-draft.research_additional_context = _research_with_connections
-
-
-VALUE_SYSTEM = """You are the editorial value gate for Deadikace. Decide whether this
-candidate has enough genuine material to justify a substantial original article.
-Do NOT reward word count. Judge what Deadikace can add beyond the immediate competitor
-coverage.
-
-Score 0-10. Consider: independently researched facts; useful related-story
-connections; career/discography/history context that directly explains the news;
-documented implications or analysis; and whether the combination gives the reader a
-reason to read Deadikace rather than the original source.
-
-A story based mainly on one competitor article, with only paraphrased facts and
-generic biography, should score low. A genuinely useful news development can score
-high even if concise. If meaningful added value is not available, reject it.
-
-Return ONLY JSON: {"score":0-10,"reason":"brief reason"}."""
-
-_orig_draft_article = draft.draft_article
-
-
-def _draft_with_value_gate(topic):
-    if getattr(config, "ENABLE_DEEP_RESEARCH", True):
-        try:
-            material, _ = draft._build_source_material(topic)
-            research = topic.get("research_notes") or "NONE"
-            raw = _call_editor(VALUE_SYSTEM, f"Topic: {topic['items'][0]['title']}\n\nSource material:\n{material}\n\nIndependent research:\n{research}", 600)
-            result = json.loads(raw)
-            score = int(result.get("score", 0))
-            print(f"[info] Editorial-value score: {score}/10 -- {result.get('reason','')}")
-            if score < config.MIN_EDITORIAL_VALUE_SCORE:
-                print(f"[info] Skipping low-value story before drafting (score {score} < {config.MIN_EDITORIAL_VALUE_SCORE}).")
-                return []
-        except Exception as exc:
-            print(f"[fatal] Editorial-value gate failed; rejecting topic for safety: {exc}")
-            return []
-    articles = _orig_draft_article(topic)
-    return articles
-
-
-draft.draft_article = _draft_with_value_gate
-
-
-# The writer remains a news writer, but may add evidence-based editorial context and
-# relevant connections. It must never manufacture opinions or consensus.
 draft.DRAFT_SYSTEM_PROMPT += """
 
 EDITORIAL CONTEXT AND CONNECTIONS:
@@ -261,8 +248,7 @@ ORIGINALITY GATE:
 The finished article must provide value beyond the immediate competitor report. Do
 not simply reorder or paraphrase source facts. Use the independent research to add
 context, connections, chronology, implications, or documented background. If the
-available material does not support meaningful added value, the article should be
-rejected rather than padded.
+available material does not support meaningful added value, do not pad the article.
 """
 draft.RELEVANCE_SYSTEM_PROMPT += "\n\nFINAL RULE: if the primary story is metal-scene content rather than rock, exclude it. When uncertain, exclude it."
 
@@ -271,38 +257,23 @@ _orig_create = wordpress.create_post
 
 
 def _story_id_for_article(article):
-    text = re.sub(r"\s+", " ", (article.get("title", "") + " " + re.sub(r"<[^>]+>", " ", article.get("content_html", ""))).lower()).strip()
+    text = re.sub(
+        r"\s+",
+        " ",
+        (article.get("title", "") + " " + re.sub(r"<[^>]+>", " ", article.get("content_html", ""))).lower(),
+    ).strip()
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:20]
-
-
-def _article_probe(article):
-    return {
-        "title": article.get("title", ""),
-        "excerpt": re.sub(r"<[^>]+>", " ", article.get("content_html", ""))[:1200],
-    }
-
-
-def _semantic_article_duplicate(article, existing):
-    if not existing:
-        return False
-    existing_lines = "\n".join(f"- {p['title']} -- {p['excerpt']}" for p in existing)
-    try:
-        raw = _call_editor(
-            STORY_SYSTEM,
-            f"Candidate article:\n- {article.get('title','')} -- {article.get('excerpt','')}\n\nExisting Deadikace posts/drafts:\n{existing_lines}\n\nReturn [1] only if the candidate is the same underlying story as an existing item; otherwise return [].",
-            1000,
-        )
-        return 1 in {int(x) for x in json.loads(raw)}
-    except Exception as exc:
-        print(f"[fatal] Final article duplicate check failed; refusing to create the post: {exc}")
-        return True
 
 
 def _final_create(article, category_id=None, featured_media_id=None):
     existing = _wp_recent_all()
-    probe = _article_probe(article)
-    if _semantic_article_duplicate(probe, existing):
-        raise RuntimeError(f"Final idempotency guard rejected likely duplicate: {article.get('title','')}")
+    if existing:
+        probe = [{
+            "title": article.get("title", ""),
+            "excerpt": re.sub(r"<[^>]+>", " ", article.get("content_html", ""))[:1200],
+        }]
+        if _semantic_dedupe(probe, existing) == []:
+            raise RuntimeError(f"Final idempotency guard rejected likely duplicate: {article.get('title','')}")
 
     result = _orig_create(article, category_id=category_id, featured_media_id=featured_media_id)
     try:
@@ -313,7 +284,8 @@ def _final_create(article, category_id=None, featured_media_id=None):
             wordpress._session.post(
                 f"{API_ROOT}/posts/{post_id}",
                 json={"content": current + "\n" + marker},
-                auth=AUTH, timeout=wordpress.REQUEST_TIMEOUT,
+                auth=AUTH,
+                timeout=wordpress.REQUEST_TIMEOUT,
             )
     except Exception as exc:
         print(f"[warn] Could not persist story marker after creation: {exc}")
