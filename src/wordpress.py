@@ -4,6 +4,7 @@ Docs: https://developer.wordpress.org/rest-api/
 """
 
 import re
+from urllib.parse import urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -15,17 +16,44 @@ from config import (
     YOAST_TITLE_FIELD, YOAST_META_DESC_FIELD, YOAST_FOCUS_KEYWORD_FIELD,
 )
 
-API_ROOT = f"{WP_BASE_URL.rstrip('/')}/wp-json/wp/v2"
-AUTH = HTTPBasicAuth(WP_USERNAME, WP_APP_PASSWORD)
-REQUEST_TIMEOUT = 45
+# Hostinger/CDN setups can expose the public site through both the apex
+# domain and www, while a WAF/proxy may treat traffic to one hostname
+# differently from the other. Keep the configured URL first, then try the
+# equivalent hostname as a safe fallback. This does not bypass authentication
+# or any firewall; it simply avoids failing because the configured alias is
+# the one being dropped.
+def _candidate_base_urls(configured_url):
+    configured = configured_url.rstrip("/")
+    parsed = urlparse(configured)
+    host = (parsed.hostname or "").lower()
+    scheme = parsed.scheme or "https"
 
-# Some hosts (Hostinger included) have bot/DDoS protection layers that
-# occasionally drop a connection attempt from a datacenter IP like GitHub
-# Actions' without it being a persistent block -- retrying with backoff
-# lets a transient blip resolve itself instead of failing the whole run.
+    candidates = [configured]
+    if host.startswith("www."):
+        alternate_host = host[4:]
+    else:
+        alternate_host = f"www.{host}" if host else ""
+
+    if alternate_host:
+        alternate = f"{scheme}://{alternate_host}"
+        if alternate not in candidates:
+            candidates.append(alternate)
+
+    return candidates
+
+ACTIVE_BASE_URL = WP_BASE_URL.rstrip("/")
+API_ROOT = f"{ACTIVE_BASE_URL}/wp-json/wp/v2"
+AUTH = HTTPBasicAuth(WP_USERNAME, WP_APP_PASSWORD)
+
+# Keep ordinary API requests reasonably quick. The old connectivity check used
+# the same long-retry session as write requests, which could turn one blocked
+# host into a 5+ minute failure before the agent even started. Connectivity is
+# now tested separately and briefly; normal requests retain modest retries.
+REQUEST_TIMEOUT = 30
+CONNECTIVITY_TIMEOUT = 8
 _retry = Retry(
-    total=4, connect=4, read=2,
-    backoff_factor=8,  # 8s, 16s, 32s, 64s between attempts
+    total=2, connect=2, read=1,
+    backoff_factor=2,
     status_forcelist=(500, 502, 503, 504),
     allowed_methods=("GET", "POST"),
 )
@@ -34,20 +62,37 @@ _session.mount("https://", HTTPAdapter(max_retries=_retry))
 _session.mount("http://", HTTPAdapter(max_retries=_retry))
 
 
+def _activate_base_url(base_url):
+    global ACTIVE_BASE_URL, API_ROOT
+    ACTIVE_BASE_URL = base_url.rstrip("/")
+    API_ROOT = f"{ACTIVE_BASE_URL}/wp-json/wp/v2"
+
+
 def check_connectivity():
     """
-    Quick reachability check against the WP REST API root, meant to be
-    called first thing in a run so a persistent connectivity problem
-    (e.g. host-level bot protection blocking GitHub Actions' IPs) fails
-    fast with a clear message, rather than after burning LLM API quota on
-    the discovery/relevance steps first.
+    Verify the WordPress REST API is reachable before spending LLM quota.
+
+    First tries the configured hostname, then the equivalent www/apex alias.
+    The probe uses a no-retry request so a blocked alias fails quickly and the
+    fallback can be tested. The selected working base URL is then used by all
+    subsequent WordPress API calls in this process.
     """
-    try:
-        resp = _session.get(f"{WP_BASE_URL.rstrip('/')}/wp-json/", timeout=REQUEST_TIMEOUT)
-        resp.raise_for_status()
-        return True, None
-    except requests.RequestException as e:
-        return False, str(e)
+    errors = []
+    for base_url in _candidate_base_urls(WP_BASE_URL):
+        try:
+            resp = requests.get(
+                f"{base_url}/wp-json/",
+                timeout=CONNECTIVITY_TIMEOUT,
+                headers={"User-Agent": "DeadikacePublisher/1.0"},
+            )
+            resp.raise_for_status()
+            _activate_base_url(base_url)
+            print(f"[info] WordPress REST API reachable via {ACTIVE_BASE_URL}")
+            return True, None
+        except requests.RequestException as e:
+            errors.append(f"{base_url}: {e}")
+
+    return False, " | ".join(errors)
 
 
 def get_recent_post_titles(per_page=50):
@@ -59,15 +104,16 @@ def get_recent_post_titles(per_page=50):
     """
     return [p["title"] for p in get_recent_posts_for_dedup(per_page)]
 
+
 def get_recent_posts_for_dedup(per_page=50):
     """
     Fetch recent posts' titles AND excerpts for duplicate-checking.
     Comparing candidate topics against bare titles alone is unreliable --
     two outlets (or two of our own runs) can cover the exact same story
     with completely different headlines, and a title-only comparison
-    gives the LLM nothing to catch that with. The excerpt (first
-    sentence or two of the actual article) is usually enough to confirm
-    or rule out a match even when the headlines don't overlap at all.
+    gives the LLM nothing to catch that with. The excerpt (first sentence
+    or two of the actual article) is usually enough to confirm or rule out
+    a match even when the headlines don't overlap at all.
     """
     resp = _session.get(
         f"{API_ROOT}/posts",
@@ -111,17 +157,12 @@ def get_or_create_tag(name):
 
 def get_or_create_category(name):
     if not name or not name.strip():
-        raise ValueError("get_or_create_category() called with an empty category name -- "
-                          "refusing to guess a category rather than risk picking the wrong one.")
+        raise ValueError("get_or_create_category() called with an empty category name -- refusing to guess a category rather than risk picking the wrong one.")
 
     resp = _session.get(f"{API_ROOT}/categories", params={"search": name}, auth=AUTH, timeout=30)
     resp.raise_for_status()
     matches = resp.json()
 
-    # Only accept an EXACT case-insensitive name match. WP's search param
-    # does a loose partial match, so falling back to "the first result"
-    # when there's no exact match risks silently filing posts under an
-    # unrelated category -- better to create the intended one instead.
     for m in matches:
         if m["name"].strip().lower() == name.strip().lower():
             return m["id"]
@@ -144,10 +185,7 @@ def search_related_posts(keyword, limit=3):
 
 
 def upload_media(image_bytes, filename, alt_text="", content_type="image/jpeg"):
-    """
-    Uploads an image to the WordPress media library.
-    Returns dict with id and source_url, or None on failure.
-    """
+    """Uploads an image to the WordPress media library."""
     ext_by_type = {
         "image/jpeg": ".jpg", "image/jpg": ".jpg",
         "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif",
@@ -174,8 +212,6 @@ def upload_media(image_bytes, filename, alt_text="", content_type="image/jpeg"):
     media = resp.json()
 
     if alt_text:
-        # Alt text has to be set via a follow-up PATCH -- the upload
-        # endpoint doesn't accept it directly.
         try:
             _session.post(
                 f"{API_ROOT}/media/{media['id']}",
@@ -201,7 +237,7 @@ def create_post(article, category_id=None, featured_media_id=None):
         "title": article["title"],
         "content": article["content_html"],
         "excerpt": article.get("excerpt", ""),
-        "status": POST_STATUS,  # "publish" or "draft"
+        "status": POST_STATUS,
         "tags": tag_ids,
         "meta": {
             YOAST_TITLE_FIELD: article.get("seo_title", article["title"]),
