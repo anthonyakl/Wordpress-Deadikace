@@ -373,37 +373,13 @@ own further research) as their source material.
 ]
 """
 
-RELEVANCE_SYSTEM_PROMPT = """You are a rock music editor triaging news headlines for Deadikace, a
-classic and mainstream rock blog. Rock is the core focus -- classic
-rock, hard rock, blues rock, alternative rock, grunge, punk, and
-today's most notable/popular rock artists and bands.
-
-Given a numbered list of headlines, identify which ones are genuinely
-relevant to that rock focus. Include headlines about rock musicians,
-bands, artists, albums, tours, gear, or rock culture news.
-
-Metal is NOT this site's focus. Exclude headlines that are primarily
-about metal-specific bands, subgenres, or scenes (death metal, black
-metal, metalcore, nu-metal, and similar) UNLESS the artist also has
-broad, mainstream classic-rock name recognition outside the metal scene
-(e.g. Metallica, Black Sabbath, Ozzy Osbourne, Iron Maiden) -- niche or
-metal-scene-specific acts and stories should be excluded even if a
-mainstream rock name is mentioned in passing alongside them.
-
-Also exclude headlines primarily about other unrelated genres (pop,
-rap/hip-hop, K-pop, R&B, country, EDM/dance) or unrelated topics
-(general lifestyle, cars, celebrities outside music), even if a rock
-artist is only mentioned in passing.
-
-When in doubt between excluding and keeping a genuinely rock-focused
-headline, lean toward keeping it. When in doubt specifically about
-whether something is metal-scene content rather than mainstream rock,
-lean toward excluding it.
-
-Respond with ONLY a JSON array of the relevant headline numbers, e.g.
-[1,3,4,7]. No other text, no explanation.
+RELEVANCE_SYSTEM_PROMPT = """You are a rock music editor triaging news headlines for Deadikace, a classic and mainstream rock blog.
+CORE ROCK GENRES in scope: rock, rock and roll, classic rock, hard rock, heavy rock, blues rock, folk rock, progressive rock, psychedelic rock, southern rock, garage rock, alternative rock, indie rock, punk rock, glam rock, roots rock, country rock, funk rock, art rock, grunge, post-punk, and closely related rock styles, plus general rock culture news for artists working primarily in these styles.
+METAL SUBGENRES out of scope: death metal, black metal, doom metal, sludge metal, thrash metal, power metal, symphonic metal, progressive metal, metalcore, deathcore, djent, nu-metal, and other extreme metal-scene subgenres, releases, or festivals.
+CLASSIFY THE STORY, NOT JUST THE ARTIST. Crossover artists like Iron Maiden, Ozzy Osbourne, Metallica, and Black Sabbath have both a metal identity and broad classic or hard-rock relevance. Decide based on what the headline is actually about, not the artist name alone. A story passes only if its primary subject is genuinely rock-relevant, and should be excluded if its primary subject is metal-scene specific even if it mentions a crossover artist.
+Example: a broad arena-tour or classic-rock retrospective story about a crossover artist should be kept. A story whose primary subject is a niche metal-scene release, festival, or band that only mentions a crossover artist in passing should be excluded.
+Also exclude headlines primarily about other unrelated genres (pop, rap/hip-hop, K-pop, R&B, country, EDM/dance) or unrelated topics (general lifestyle, cars, celebrities outside music), even if a rock artist is only mentioned in passing. When in doubt between excluding and keeping a genuinely rock-focused headline, lean toward keeping it. When in doubt about whether a story's primary subject is metal-scene content rather than mainstream/classic/hard rock, lean toward excluding it. Respond with ONLY a JSON array of the relevant headline numbers, for example a two-item array like [1,3]. No other text, no explanation.
 """
-
 RESEARCH_SYSTEM_PROMPT = """You are a research assistant for Deadikace, a
 rock music blog, helping a staff writer add real depth to a news article
 before it's written -- not writing the article itself.
@@ -696,13 +672,40 @@ def filter_duplicate_topics(topics, existing_posts):
 
     return [t for i, t in enumerate(topics) if i not in dup_idx]
 
+DRAFTPY_FALLBACK_MARKER_START
+_METAL_SUBGENRE_FALLBACK_TERMS = (
+   "death metal", "black metal", "doom metal", "sludge metal",
+   "thrash metal", "power metal", "symphonic metal", "progressive metal",
+   "metalcore", "deathcore", "djent", "nu-metal", "nu metal",
+)
+def _fallback_exclude_obvious_metal(topics):
+   """
+   Deterministic fallback used only when the LLM relevance call itself
+   fails. Excludes a headline only if it contains an unambiguous metal
+   subgenre keyword; everything else (including borderline or ambiguous
+   headlines) is kept, matching the "when in doubt, keep it" bias of the
+   real LLM-based filter.
+   """
+   kept = []
+   dropped = 0
+   for t in topics:
+      title = t["items"][0]["title"].lower()
+      if any(term in title for term in _METAL_SUBGENRE_FALLBACK_TERMS):
+         dropped += 1
+         continue
+      kept.append(t)
+   print(f"[warn] Fallback keyword filter kept {len(kept)} of {len(topics)} "
+         f"topics ({dropped} dropped for obvious metal-subgenre keywords).")
+   return kept
+
+
 def filter_rock_relevant_topics(topics):
     """
     Sends just the headlines (one batched call, not one per topic) to the
-    configured LLM and keeps only genuinely rock-relevant ones. Falls back
-    to keeping everything if the classification call fails for any reason
-    -- better to occasionally draft an off-topic article than to silently
-    drop every candidate topic due to a transient API error.
+    configured LLM and keeps only genuinely rock-relevant ones. If the
+    classification call fails, falls back to a deterministic keyword
+    filter (see _fallback_exclude_obvious_metal) that drops only obvious
+    metal-subgenre headlines and keeps everything else if ambiguous.
     """
     if not topics:
         return topics
@@ -718,9 +721,9 @@ def filter_rock_relevant_topics(topics):
         indices = json.loads(raw)
         keep_idx = {int(i) - 1 for i in indices}
     except Exception as e:
-        print(f"[warn] Rock-relevance filtering failed ({e}); proceeding without it "
-              f"(all {len(topics)} topics kept).")
-        return topics
+        print(f"[warn] Rock-relevance filtering failed ({e}); falling back to "
+              f"keyword-based metal filter.")
+        return _fallback_exclude_obvious_metal(topics)
 
     filtered = [t for i, t in enumerate(topics) if i in keep_idx]
     print(f"[info] Rock-relevance filter kept {len(filtered)} of {len(topics)} topics.")
