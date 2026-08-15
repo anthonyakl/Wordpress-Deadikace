@@ -71,7 +71,15 @@ def get_recent_posts_for_dedup(per_page=50):
     """
     resp = _session.get(
         f"{API_ROOT}/posts",
-        params={"per_page": per_page, "_fields": "title,excerpt,link"},
+        params={
+            "per_page": per_page,
+            "_fields": "title,excerpt,link",
+            # Include drafts/pending/scheduled posts in the dedup pool, not
+            # just published ones -- a topic already drafted (but not yet
+            # published) in an earlier run must still be caught as a
+            # duplicate, otherwise the same story can get drafted twice.
+            "status": "publish,future,draft,pending",
+        },
         auth=AUTH,
         timeout=REQUEST_TIMEOUT,
     )
