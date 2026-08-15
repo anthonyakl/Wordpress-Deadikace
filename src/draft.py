@@ -610,6 +610,18 @@ the excerpt, not just the title, to judge this -- headlines for the same
 story are often worded very differently by different outlets, but the
 actual content described will match.
 
+When judging this, compare on: (1) the main artist, band, or entity
+involved; (2) the specific type of event or development (e.g. album
+release, tour announcement, lineup change, obituary, lawsuit,
+interview); (3) any other named entities involved (co-artists, labels,
+venues, other people); and (4) the approximate timing of the event
+described. Two candidates about the SAME artist are NOT automatically
+duplicates -- a new album announcement and an unrelated tour-date
+change for the same artist are different stories and should both be
+kept. Only mark a candidate as a duplicate when the underlying
+event/story itself, not just the artist, clearly matches an existing
+post.
+
 If you are genuinely unsure whether a candidate is the same story as an
 existing post, treat it as a duplicate and skip it -- publishing a
 near-duplicate is a worse outcome than missing one topic that had
@@ -672,7 +684,6 @@ def filter_duplicate_topics(topics, existing_posts):
 
     return [t for i, t in enumerate(topics) if i not in dup_idx]
 
-DRAFTPY_FALLBACK_MARKER_START
 _METAL_SUBGENRE_FALLBACK_TERMS = (
    "death metal", "black metal", "doom metal", "sludge metal",
    "thrash metal", "power metal", "symphonic metal", "progressive metal",
@@ -747,6 +758,17 @@ unsure whether two candidates are the same story, treat them as
 duplicates -- publishing two near-identical articles in the same run is
 a worse outcome than merging two topics that turn out to have been
 slightly different angles on the same news.
+
+When judging this, compare on: (1) the main artist, band, or entity
+involved; (2) the specific type of event or development (e.g. album
+release, tour announcement, lineup change, obituary, lawsuit,
+interview); (3) any other named entities involved (co-artists, labels,
+venues, other people); and (4) the approximate timing of the event
+described. Two candidates about the SAME artist are NOT automatically
+duplicates -- a new album announcement and an unrelated tour-date
+change for the same artist are different topics and should both be
+kept. Only mark two candidates as duplicates of each other when the
+underlying event/story itself, not just the artist, clearly matches.
 
 When you find a group of duplicates, keep only the one with the most
 detail (prefer the one with a longer snippet / more source items) and
