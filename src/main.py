@@ -12,7 +12,10 @@ from config import (
     ARTICLE_FONT_SIZE_PX, ENABLE_SOURCE_IMAGES,
 )
 from discover import get_trending_topics
-from draft import draft_article, filter_rock_relevant_topics, filter_duplicate_topics, dedupe_topics_within_batch, verify_and_refine
+from draft import (
+    draft_article, filter_rock_relevant_topics, filter_duplicate_topics,
+    dedupe_topics_within_batch, verify_and_refine, research_additional_context,
+)
 from article_fetch import enrich_topic_with_full_text, download_image_bytes
 from wikimedia import search_commons_image, download_commons_image
 from wordpress import (
@@ -36,7 +39,7 @@ def _strip_image_placeholders(content_html):
     be worse than no image at all (e.g. returning a photo of an actual
     eagle for an article about the band Eagles). Rather than re-attempt
     automatic image sourcing, articles are simply published without
-    inline images for now, so any \`<!--IMAGE_N-->\` placeholder the model
+    inline images for now, so any `<!--IMAGE_N-->` placeholder the model
     still emits is just stripped out.
     """
     for i in range(1, 10):
@@ -359,7 +362,7 @@ def _blockify(content_html, font_size_px):
                 f'{inner}\n<!-- /wp:paragraph -->'
             )
         elif m.group("h3"):
-            parts.append(f'<!-- wp:heading {{"level":3}} -->\n{m.group("h3")}\n<!-- /wp:heading -->')
+            parts.append(f'<!-- wp:heading {{"level":3}} -->\n{M.group("h3")}\n<!-- /wp:heading -->')
         elif m.group("h2"):
             parts.append(f'<!-- wp:heading -->\n{m.group("h2")}\n<!-- /wp:heading -->')
         elif m.group("figure"):
@@ -367,7 +370,7 @@ def _blockify(content_html, font_size_px):
         elif m.group("ol"):
             parts.append(f'<!-- wp:list {{"ordered":true}} -->\n{m.group("ol")}\n<!-- /wp:list -->')
         elif m.group("ul"):
-            parts.append(f'<!-- wp:list -->\n{m.group("ul")}\n<!-- /wp:list -->')
+            parts.append(f'<!-- wp:list -->\n{M.group("ul")}\n<!-- /wp:list -->')
 
     return "\n\n".join(parts)
 
@@ -432,6 +435,11 @@ def run():
 
         print("Fetching full source article text for factual grounding...")
         enrich_topic_with_full_text(topic)
+
+        print("Researching additional factual context beyond the immediate "
+              "competitor coverage (chart/catalog data, documented prior "
+              "statements, historical background)...")
+        research_additional_context(topic)
 
         if published_count > 0:
             time.sleep(10)  # stay comfortably under free-tier requests-per-minute limits
@@ -531,3 +539,4 @@ if __name__ == "__main__":
     except KeyError as e:
         print(f"[fatal] Missing required environment variable: {e}")
         sys.exit(1)
+
