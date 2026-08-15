@@ -91,15 +91,21 @@ def search_commons_image(query):
     if not candidates:
         return None
 
-    # Only ever pick a candidate whose title has SOME word in common with
-    # the query. A zero-relevance match means Commons' search returned
-    # something for unrelated reasons (a tag, a description snippet,
-    # etc.) with nothing to confirm it's actually the right subject --
-    # better to skip the image entirely than risk an unrelated one (e.g.
-    # a museum photo of an artist's guitar when the query asked for a
-    # performance shot). Among relevant candidates, prefer a normal
-    # (non-extreme) aspect ratio.
-    relevant = [c for c in candidates if c["relevance"] > 0]
+    # Require a MEANINGFUL overlap between the query and the candidate's
+    # title, not just any single shared word. A single-word overlap (e.g.
+    # a shared surname) is not enough to confirm the right subject -- it
+    # previously let a query like "Shane Hawkins Chevy Metal drummer"
+    # match an unrelated "Taylor Hawkins memorial" photo, since both
+    # happen to contain the word "Hawkins". Requiring at least two
+    # overlapping words (or a full match for genuinely one-word queries)
+    # makes it much harder for an incidental word overlap alone to pass
+    # as a real subject match. Better to skip the image entirely than
+    # risk an unrelated one (e.g. a museum photo of an artist's guitar
+    # when the query asked for a performance shot, or a memorial photo
+    # of a different family member entirely). Among relevant candidates,
+    # prefer a normal (non-extreme) aspect ratio.
+    min_relevance = min(2, len(query_words))
+    relevant = [c for c in candidates if c["relevance"] >= min_relevance]
     if not relevant:
         return None
 
@@ -156,4 +162,3 @@ def download_commons_image(image_url, max_bytes=8_000_000):
     except requests.RequestException as e:
         print(f"[warn] Failed to download Commons image {image_url}: {e}")
         return None, None
-
