@@ -157,9 +157,22 @@ own further research) as their source material.
     the tour well past earlier expectations." RIGHT: "The band announced
     new 2027 tour dates, despite [member]'s earlier comments suggesting
     this year could be their last."
+1f. EDITORIAL ANALYSIS VS. OPINION -- distinguish grounded editorial
+    analysis from vague fan-service opinion. Grounded analysis ties a
+    claim to a specific fact already established in the sources or
+    research notes (timing relative to a prior release, a pattern in an
+    artist's career, a stated reason from an interview). Vague opinion
+    predicts audience reaction or asserts enthusiasm with no factual
+    basis behind it. Example: if a musician announces a solo album and
+    the source material notes it follows a long gap since their last
+    release, GOOD: "The album arrives four years after Dickinson's last
+    solo outing." BAD: "Fans will undoubtedly love this exciting new
+    direction from Dickinson." Only include analysis you can tie back to
+    something a source actually reports; if there's nothing to tie it
+    to, leave it out rather than filling the space with generic
+    enthusiasm.
 
 2. SYNTHESIZE ACROSS ALL provided sources to build the most complete,
-   accurate picture -- don't just rewrite the single source with the most
    detail. Cross-check: if multiple sources report the same fact, that's
    a signal it's solid; if only one source mentions a specific detail,
    still fine to include it, but don't build the whole article's angle
@@ -186,7 +199,9 @@ own further research) as their source material.
     material, use the verifiable facts in it to add real depth the
     competitor coverage alone doesn't have -- catalog/discography
     context, chart or certification data (with its source), relevant
-    historical background, or how this specific story fits into the
+    historical background, related developments involving the same artist or band, relevant
+    collaborator context, connections to other genuinely relevant recent coverage,
+    or how this specific story fits into the
     artist's or band's broader, already-documented history. Every fact
     drawn from Additional Research Notes is bound by the exact same
     rules as rule 1: never state anything not actually present in that
@@ -401,6 +416,9 @@ specific story:
   as long as you can point to where they were actually said/published.
 - Relevant, well-established historical background that helps a reader
   understand why the current story matters.
+- Related developments involving the same artist or band, relevant
+  collaborator context, or connections to other genuinely relevant
+  recent coverage.
 
 HARD RULES:
 1. Only include a fact if you can cite the specific URL where you found
