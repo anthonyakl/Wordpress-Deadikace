@@ -1,6 +1,6 @@
 """
 Central configuration for the Deadikace auto-publishing agent.
-Secrets (API keys, WP credentials) are read from environment variables —
+Secrets (API keys, WP credentials) are read from environment variables --
 never hardcode them here. See .env.example / GitHub Secrets setup in README.
 """
 
@@ -73,6 +73,26 @@ MAX_ARTICLES_PER_RUN = _env_int("MAX_ARTICLES_PER_RUN", 2)
 # copyright tradeoff this involves -- set to false to publish without any
 # featured image instead, which carries no such risk.
 ENABLE_SOURCE_IMAGES = _env_bool("ENABLE_SOURCE_IMAGES", True)
+
+# Whether to run a live web-search research pass on each topic before
+# drafting it, looking for verifiable factual grounding beyond the
+# competitor RSS coverage (catalog/chart data, documented prior
+# statements, established historical background) -- see
+# draft.research_additional_context() and DRAFT_SYSTEM_PROMPT rule 2b.
+# This is what lets articles add genuine depth instead of just
+# resynthesizing the same handful of competitor articles in different
+# words. Uses the same LLM_PROVIDER already configured above (Claude's
+# hosted web-search tool, or Gemini's Google Search grounding) -- no
+# separate search API key needed. Costs a bit more per article (one
+# extra LLM call with search enabled) and, for Anthropic, is billed
+# per search performed -- set to false to draft from competitor RSS
+# coverage only, exactly as the agent behaved before this feature.
+ENABLE_DEEP_RESEARCH = _env_bool("ENABLE_DEEP_RESEARCH", True)
+
+# Max number of individual web searches the research pass may perform
+# per topic. Higher allows deeper research at proportionally higher
+# cost; lower keeps it cheap and fast.
+RESEARCH_MAX_SEARCHES = _env_int("RESEARCH_MAX_SEARCHES", 6)
 
 # A story must appear in at least this many competitor feeds to be
 # considered "trending" enough to write about. Set to 1 to write about
@@ -150,3 +170,4 @@ context, not just a rehash of the news.
 YOAST_TITLE_FIELD = "_yoast_wpseo_title"
 YOAST_META_DESC_FIELD = "_yoast_wpseo_metadesc"
 YOAST_FOCUS_KEYWORD_FIELD = "_yoast_wpseo_focuskw"
+
