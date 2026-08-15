@@ -156,6 +156,23 @@ COMPETITOR_FEEDS = [
     {"name": "Rock Cellar Magazine", "url": "https://rockcellarmagazine.com/category/latest-news/feed/"},
 ]
 
+# --- Per-source ranking weight ---
+# Some competitor feeds (e.g. Loudwire) skew heavily toward metal
+# coverage. filter_rock_relevant_topics() already excludes off-topic
+# metal-scene stories regardless of source, so this does NOT let any
+# outlet's stories bypass that filter -- it only affects which
+# already-rock-relevant topics get PRIORITIZED when there are more
+# candidates than MAX_ARTICLES_PER_RUN can cover in one run, by
+# slightly discounting how much a metal-heavy outlet's coverage counts
+# toward a topic's "how many outlets are covering this" score (see
+# discover._score_topic). A story a metal-heavy outlet covers that's
+# ALSO covered by other outlets, or that clears the relevance filter on
+# its own merits, is unaffected. Any source not listed here defaults to
+# a weight of 1.0 (no adjustment).
+SOURCE_COVERAGE_WEIGHT = {
+    "Loudwire": 0.6,
+}
+
 # --- Site voice / editorial guidelines given to Claude ---
 SITE_VOICE_GUIDELINES = """
 Deadikace is a rock music blog for passionate, knowledgeable fans.
