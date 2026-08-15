@@ -362,7 +362,7 @@ def _blockify(content_html, font_size_px):
                 f'{inner}\n<!-- /wp:paragraph -->'
             )
         elif m.group("h3"):
-            parts.append(f'<!-- wp:heading {{"level":3}} -->\n{M.group("h3")}\n<!-- /wp:heading -->')
+            parts.append(f'<!-- wp:heading {{"level":3}} -->\n{m.group("h3")}\n<!-- /wp:heading -->')
         elif m.group("h2"):
             parts.append(f'<!-- wp:heading -->\n{m.group("h2")}\n<!-- /wp:heading -->')
         elif m.group("figure"):
@@ -370,7 +370,7 @@ def _blockify(content_html, font_size_px):
         elif m.group("ol"):
             parts.append(f'<!-- wp:list {{"ordered":true}} -->\n{m.group("ol")}\n<!-- /wp:list -->')
         elif m.group("ul"):
-            parts.append(f'<!-- wp:list -->\n{M.group("ul")}\n<!-- /wp:list -->')
+            parts.append(f'<!-- wp:list -->\n{m.group("ul")}\n<!-- /wp:list -->')
 
     return "\n\n".join(parts)
 
@@ -540,3 +540,4 @@ if __name__ == "__main__":
         print(f"[fatal] Missing required environment variable: {e}")
         sys.exit(1)
 
+                  
