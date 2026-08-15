@@ -5,11 +5,17 @@ Uses an LLM (Claude or Gemini, whichever is configured) to:
    matching can't reliably catch "BTS" or "Lil Baby" as off-topic since
    those headlines don't contain words like "k-pop" or "rap" at all, but
    an LLM recognizes the artists directly).
-2. Draft an original, SEO-optimized article for a chosen topic. Only
-   titles/summaries/links from competitor RSS feeds are passed in as
-   factual signals -- the model is explicitly instructed to write
-   original analysis, not to paraphrase or closely follow any single
-   source.
+2. Research additional factual grounding for a chosen topic beyond the
+   immediate competitor RSS coverage, using a live web-search tool (see
+   research_additional_context() below) -- background, catalog/chart
+   data, prior interviews, etc., each tied to a real source URL.
+3. Draft an original, SEO-optimized article for a chosen topic. Only
+   titles/summaries/links from competitor RSS feeds -- plus, when
+   available, the independently-researched notes from step 2 -- are
+   passed in as factual signals; the model is explicitly instructed to
+   write original analysis, not to paraphrase or closely follow any
+   single source, and to add real value beyond a straight recap of that
+   source material (see DRAFT_SYSTEM_PROMPT rule 2b).
 """
 
 import json
@@ -20,6 +26,7 @@ from config import (
     ANTHROPIC_API_KEY, CLAUDE_MODEL,
     GEMINI_API_KEY, GEMINI_MODEL,
     SITE_VOICE_GUIDELINES,
+    ENABLE_DEEP_RESEARCH, RESEARCH_MAX_SEARCHES,
 )
 
 DRAFT_SYSTEM_PROMPT = f"""You are a staff news writer for Deadikace, a rock music blog.
@@ -28,10 +35,14 @@ DRAFT_SYSTEM_PROMPT = f"""You are a staff news writer for Deadikace, a rock musi
 
 You will be given a news topic and the source material several outlets
 published about it (for outlets where full text was retrievable, you'll
-have the full article; for others, only the RSS title/summary). Your job
-is to write a STRAIGHT NEWS REPORT, not an editorial or opinion piece --
-the same way a real reporter would write up a wire story using multiple
-outlets' coverage as their source material.
+have the full article; for others, only the RSS title/summary). You may
+also be given an "Additional Research Notes" block -- independently
+researched facts, gathered via live web search specifically for this
+topic, that go beyond what the competitor RSS coverage alone contains
+(see rule 2b for how to use it). Your job is to write a STRAIGHT NEWS
+REPORT, not an editorial or opinion piece -- the same way a real reporter
+would write up a wire story using multiple outlets' coverage (and their
+own further research) as their source material.
 
 0. MULTIPLE DISTINCT STORIES -- SPLIT, DON'T MERGE: before writing, check
    whether the source material actually covers two or more clearly
@@ -74,6 +85,9 @@ outlets' coverage as their source material.
     trophy, a dollar figure) is exactly the kind of thing that's tempting
     to add and easy for a reader to disprove -- treat any urge to add one
     as a signal to stop and check the source again, not a sign it's safe.
+    This rule applies with EQUAL force to the Additional Research Notes
+    block, if one is provided -- it is source material, not license to
+    speculate. See rule 2b for how it's meant to be used.
 1b. BEFORE finalizing the article, re-read it against the source material
     one claim at a time and ask: is every date, number, named event,
     award, quote, and outcome in this draft actually present in the
@@ -84,7 +98,9 @@ outlets' coverage as their source material.
     being told -- e.g. tacking on an unconnected career trivia item at
     the end just to add length. Before including a fact, ask: does this
     directly serve the story I'm telling, or is it just trivia about the
-    same person/band? If it's the latter, cut it.
+    same person/band? If it's the latter, cut it. This applies to facts
+    drawn from Additional Research Notes too -- added depth should serve
+    the story, not just prove that research happened.
 1c. DON'T STRIP OUT THE SOURCE'S OWN SCENE-SETTING AND CONTEXT to make the
     article shorter or more "news-brief" -- concrete, specific details
     the source already provides (what a room looked like, what someone
@@ -123,7 +139,8 @@ outlets' coverage as their source material.
       generalizing it into an unqualified claim. "Third-most-played song
       in the band's catalog, per setlist.fm" is accurate; "third-most-
       performed song in the band's history" overstates it as an official,
-      universally-tracked ranking.1e. DON'T EDITORIALIZE CERTAINTY THE SOURCE DOESN'T HAVE. It's tempting to
+      universally-tracked ranking.
+1e. DON'T EDITORIALIZE CERTAINTY THE SOURCE DOESN'T HAVE. It's tempting to
     frame a plain announcement as more dramatic than it is -- e.g.
     writing that a band is "keeping something going past previous
     expectations" when the source only reports a new announcement, with
@@ -146,7 +163,9 @@ outlets' coverage as their source material.
    detail. Cross-check: if multiple sources report the same fact, that's
    a signal it's solid; if only one source mentions a specific detail,
    still fine to include it, but don't build the whole article's angle
-   around one outlet's framing.
+   around one outlet's framing. "All provided sources" includes the
+   Additional Research Notes block, when present, on equal footing with
+   the numbered Source blocks.
 2a. DON'T BURY OR DROP THE BIGGEST FACT: before finalizing the article,
     scan all the source material for the single most newsworthy element
     -- the thing most sources emphasize, or the one with the most news
@@ -156,6 +175,32 @@ outlets' coverage as their source material.
     mentioned in passing or left out in favor of less significant
     details like a full setlist. A setlist is supporting detail; an
     incident during the show is the story.
+2b. ADD GENUINE VALUE BEYOND A STRAIGHT RECAP -- THE ORIGINALITY TEST.
+    Before finalizing, ask: if a reader already read the competitor
+    coverage this topic is based on, would they still learn something
+    from this article? Restructuring the same handful of competitor
+    articles into new sentences is NOT enough on its own -- rewriting the
+    same facts in different words is still a close paraphrase even when
+    no single sentence is copied verbatim.
+    If an Additional Research Notes block is provided below the source
+    material, use the verifiable facts in it to add real depth the
+    competitor coverage alone doesn't have -- catalog/discography
+    context, chart or certification data (with its source), relevant
+    historical background, or how this specific story fits into the
+    artist's or band's broader, already-documented history. Every fact
+    drawn from Additional Research Notes is bound by the exact same
+    rules as rule 1: never state anything not actually present in that
+    block, and never treat "it wasn't in the RSS feed" as license to
+    speculate just because it feels like background knowledge you
+    already have.
+    If NO Additional Research Notes block is provided, or it genuinely
+    contains nothing usable for this specific story, do not force in
+    unrelated trivia to compensate (see rule 1d) -- a shorter, purely
+    factual straight report is the right and acceptable output in that
+    case, exactly as rule 1 already prefers. The goal is a smaller
+    number of genuinely valuable articles, not padding every article to
+    a fixed length just to look more original.
+
 3. Direct quotes from the people involved (band members, reps, etc.) may
    be quoted verbatim with attribution if they appear in the source
    material -- these are factual statements, not the reporting
@@ -172,6 +217,7 @@ outlets' coverage as their source material.
     verbatim wording given in the source material -- never construct a
     plausible-sounding quote or tighten/punch up a paraphrase until it
     reads like one.
+
 4. Lead with the most newsworthy, concrete fact (the "what happened"),
    not a scene-setting or scene-editorializing opener. A good test: could
    this headline/opening be confirmed as accurate by someone who just
@@ -182,16 +228,16 @@ outlets' coverage as their source material.
     </ol> for a setlist (order matters) or <ul> for an unordered list --
     never as a run-together comma-separated list inside a <p>.
 4a-i. SETLIST ACCURACY: never construct, complete, or infer a setlist --
-    a specific, ordered list of songs performed is exactly the kind of
-    detail readers expect to be 100% accurate, and getting even one
-    song or the order wrong is a real credibility problem. Only include
-    a setlist (full or partial) if the source material explicitly
-    provides one (e.g. citing Setlist.fm or listing the songs played in
-    order). If the sources only mention a handful of songs performed
-    without a full confirmed list, name those specific songs in prose
-    instead of presenting them as a complete setlist. If no source
-    gives any song-by-song detail, don't include a setlist section at
-    all.
+      a specific, ordered list of songs performed is exactly the kind of
+      detail readers expect to be 100% accurate, and getting even one
+      song or the order wrong is a real credibility problem. Only include
+      a setlist (full or partial) if the source material explicitly
+      provides one (e.g. citing Setlist.fm or listing the songs played in
+      order). If the sources only mention a handful of songs performed
+      without a full confirmed list, name those specific songs in prose
+      instead of presenting them as a complete setlist. If no source
+      gives any song-by-song detail, don't include a setlist section at
+      all.
 4b. READABILITY -- SUBHEADINGS: if the article is longer than ~300 words,
     it MUST include at least one <h2> subheading within the first ~300
     words, and roughly one <h2> every 250-350 words after that. Do not let
@@ -248,6 +294,20 @@ outlets' coverage as their source material.
     when that's what the article calls for, use source_images instead of
     (or alongside) a Wikimedia search. Match the image to what its alt
     text or nearby heading suggests it depicts; never guess.
+4g. SOURCES & FURTHER READING SECTION: end content_html with a final
+    <h2>Sources & Further Reading</h2> section followed by a <ul> list,
+    one <li> per outlet or reference actually drawn upon for a fact or
+    quote in the article -- both the numbered Source blocks and, if used,
+    the Additional Research Notes block. Each <li> must be an <a href>
+    using the EXACT URL given for that source (the "Link:" line under a
+    Source block, or the exact URL cited in Additional Research Notes) --
+    never invent, guess, shorten, or paraphrase a URL. Label each link
+    with the outlet or publication's name, e.g.
+    <li><a href="https://www.rollingstone.com/...">Rolling Stone</a></li>.
+    This is a factual attribution list, not decoration -- omit it only
+    for a very short wire-brief article where you judge a formal sources
+    list would add nothing, and never include a source you didn't
+    actually use.
 
 5. TITLE STYLE: the title must be specific, accurate, AND genuinely
    eye-catching / SEO-optimized -- not a dry, academic-sounding
@@ -271,37 +331,37 @@ outlets' coverage as their source material.
    schema:
 
 [
-{{
-  "title": "string, accurate and specific, states the actual news or angle, written to be eye-catching and SEO-friendly (see rule 5), under 70 chars",
-  "seo_title": "string, SEO title tag, under 60 chars, includes primary keyword",
-  "meta_description": "string, under 155 chars, includes primary keyword, makes people want to click",
-  "focus_keyword": "string, 2-4 word primary SEO keyword phrase for this article",
-  "source_item_indices": [1, 2],
-  "tags": ["exactly 8 to 10 relevant tags, e.g. band names, genres, related artists, subgenres"],
-  "excerpt": "string, 1-2 sentence factual teaser, under 200 chars",
-  "content_html": "string, the full article body as clean HTML using <p>, <h2>, <h3> tags where natural. Do NOT include an <h1> (WordPress adds the title separately). LENGTH: when full article text was retrieved for the sources (not just RSS summaries), extract and include the genuinely reported facts, direct quotes, and specific details actually present in that full text -- aim for 600-900 words in that case, matching the depth of a real news report rather than a condensed summary of one. When only RSS summaries are available (no full text), 300-500 words is appropriate since there's less real material to draw from -- don't pad with speculation just to hit a length target either way. The test is always: does the length match how much genuine source material exists, not a fixed target."
-,
-  "illustrative_images": [
-    {{
-      "query": "string, a SPECIFIC multi-word Wikimedia Commons search naming exactly what the image should show -- e.g. 'Similitude of a Dream album cover Neal Morse Band', not just 'Neal Morse Band' or 'Similitude of a Dream'. A bare band/artist name is too ambiguous (it can match an unrelated same-named subject, like an actual eagle for the band Eagles) -- always combine the specific thing (album, venue, event, person) with enough context words to disambiguate it.",
-      "placement_after_heading": "string, the exact text of the <h2> heading in content_html after which this image should be inserted, or \"\" to place it roughly in the middle of the article if there's no natural heading to anchor to",
-      "caption": "string, a short factual caption for the image, e.g. the album title and artist, or what's shown"
-    }}
-  ],
-  "video_embeds": [
-    {{
-      "url": "string, one of the exact video URLs listed under a source's \"Videos embedded in this source\" block above -- never invent or guess a video URL",
-      "placement_after_heading": "string, the exact text of the <h2> heading in content_html after which this video should be embedded -- match it to whichever heading in YOUR article covers the same item/performance the video is of"
-    }}
-  ],
-  "source_images": [
-    {{
-      "url": "string, one of the exact image URLs listed under a source's \"Other images in this source's article body\" block above -- never invent or guess a URL, and never reuse the same URL already used as the featured image",
-      "placement_after_heading": "string, the exact text of the <h2> heading in content_html after which this image should be inserted",
-      "caption": "string, a short factual caption for the image"
-    }}
-  ]
-}}
+  {{
+    "title": "string, accurate and specific, states the actual news or angle, written to be eye-catching and SEO-friendly (see rule 5), under 70 chars",
+    "seo_title": "string, SEO title tag, under 60 chars, includes primary keyword",
+    "meta_description": "string, under 155 chars, includes primary keyword, makes people want to click",
+    "focus_keyword": "string, 2-4 word primary SEO keyword phrase for this article",
+    "source_item_indices": [1, 2],
+    "tags": ["exactly 8 to 10 relevant tags, e.g. band names, genres, related artists, subgenres"],
+    "excerpt": "string, 1-2 sentence factual teaser, under 200 chars",
+    "content_html": "string, the full article body as clean HTML using <p>, <h2>, <h3> tags where natural, ending with the Sources & Further Reading section described in rule 4g. Do NOT include an <h1> (WordPress adds the title separately). LENGTH: when full article text was retrieved for the sources (not just RSS summaries), extract and include the genuinely reported facts, direct quotes, and specific details actually present in that full text -- aim for 600-900 words in that case (up to ~1100 when Additional Research Notes materially added new grounded facts per rule 2b), matching the depth of a real news report rather than a condensed summary of one. When only RSS summaries are available (no full text) and no Additional Research Notes were usable, 300-500 words is appropriate since there's less real material to draw from -- don't pad with speculation just to hit a length target either way. The test is always: does the length match how much genuine, verifiable source material exists, not a fixed target."
+    ,
+    "illustrative_images": [
+      {{
+        "query": "string, a SPECIFIC multi-word Wikimedia Commons search naming exactly what the image should show -- e.g. 'Similitude of a Dream album cover Neal Morse Band', not just 'Neal Morse Band' or 'Similitude of a Dream'. A bare band/artist name is too ambiguous (it can match an unrelated same-named subject, like an actual eagle for the band Eagles) -- always combine the specific thing (album, venue, event, person) with enough context words to disambiguate it.",
+        "placement_after_heading": "string, the exact text of the <h2> heading in content_html after which this image should be inserted, or \\"\\" to place it roughly in the middle of the article if there's no natural heading to anchor to",
+        "caption": "string, a short factual caption for the image, e.g. the album title and artist, or what's shown"
+      }}
+    ],
+    "video_embeds": [
+      {{
+        "url": "string, one of the exact video URLs listed under a source's \\"Videos embedded in this source\\" block above -- never invent or guess a video URL",
+        "placement_after_heading": "string, the exact text of the <h2> heading in content_html after which this video should be embedded -- match it to whichever heading in YOUR article covers the same item/performance the video is of"
+      }}
+    ],
+    "source_images": [
+      {{
+        "url": "string, one of the exact image URLs listed under a source's \\"Other images in this source's article body\\" block above -- never invent or guess a URL, and never reuse the same URL already used as the featured image",
+        "placement_after_heading": "string, the exact text of the <h2> heading in content_html after which this image should be inserted",
+        "caption": "string, a short factual caption for the image"
+      }}
+    ]
+  }}
 ]
 """
 
@@ -335,12 +395,61 @@ lean toward excluding it.
 Respond with ONLY a JSON array of the relevant headline numbers, e.g.
 [1,3,4,7]. No other text, no explanation.
 """
+
+RESEARCH_SYSTEM_PROMPT = """You are a research assistant for Deadikace, a
+rock music blog, helping a staff writer add real depth to a news article
+before it's written -- not writing the article itself.
+
+You will be given a news topic and the competitor RSS/article coverage
+already gathered for it. Use web search to find ADDITIONAL, VERIFIABLE
+factual grounding a knowledgeable editor would want before writing a
+deeper, more original piece than a straight recap of that competitor
+coverage. Good things to look for, when genuinely relevant to this
+specific story:
+- Discography/catalog context (album/song release history, prior
+  related releases or events).
+- Chart positions, certifications (RIAA/BPI/etc.), award history --
+  always from an identifiable, checkable source (Billboard, RIAA,
+  Grammy.com, Wikipedia citing one of those, etc.), never a vague
+  "reportedly."
+- Documented prior statements by the people involved (interviews,
+  books, official band history) that add context to the current story,
+  as long as you can point to where they were actually said/published.
+- Relevant, well-established historical background that helps a reader
+  understand why the current story matters.
+
+HARD RULES:
+1. Only include a fact if you can cite the specific URL where you found
+   it. Never state something as fact based on general impression without
+   a source you can point to.
+2. Do not speculate, estimate, or round up from partial information.
+   If a number or date is unclear or contested across sources, say so
+   explicitly rather than picking one version.
+3. Do not try to write article prose, headlines, or ledes -- this is a
+   research brief, not a draft. Plain factual notes only.
+4. It is completely fine, and often correct, to return few findings or
+   none at all -- not every news story has meaningful additional
+   background to add. Do not pad the brief with generic trivia just to
+   have something to report.
+5. Stay on-topic: only research things that would plausibly help THIS
+   specific story, not general trivia about the artist/band that isn't
+   connected to it.
+
+OUTPUT FORMAT: a short plain-text bulleted list. Each bullet is one
+verifiable fact, followed by its source in parentheses, e.g.:
+- "Hotel California" won the Grammy for Record of the Year in 1978 and
+  is RIAA-certified 28x Platinum (source: https://www.grammy.com/... )
+
+If nothing genuinely useful and verifiable was found, respond with
+exactly the single word: NONE
+"""
+
 def _clean_json_text(raw_text):
     raw_text = raw_text.strip()
     if raw_text.startswith("```"):
         raw_text = raw_text.strip("`")
-    if raw_text.startswith("json"):
-        raw_text = raw_text[4:]
+        if raw_text.startswith("json"):
+            raw_text = raw_text[4:]
     raw_text = raw_text.strip()
     return raw_text
 
@@ -383,35 +492,125 @@ def _call_llm(system_prompt, user_prompt, max_tokens=4000):
     else:
         raise ValueError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER!r} (expected 'anthropic' or 'gemini')")
 
-def filter_rock_relevant_topics(topics):
+def _call_anthropic_with_search(system_prompt, user_prompt, max_tokens, max_searches):
     """
-    Sends just the headlines (one batched call, not one per topic) to the
-    configured LLM and keeps only genuinely rock-relevant ones. Falls back
-    to keeping everything if the classification call fails for any reason
-    -- better to occasionally draft an off-topic article than to silently
-    drop every candidate topic due to a transient API error.
+    Like _call_anthropic, but grants Claude a live, hosted web-search
+    tool for the duration of this one call, so it can look up real facts
+    instead of answering from memory alone. Returns the concatenation of
+    every plain-text block in the response, in order -- tool-use/tool-
+    result blocks (the searches themselves and their raw results) are
+    skipped, since we only want Claude's own written notes, not the raw
+    search payloads.
     """
-    if not topics:
-        return topics
+    import anthropic
 
-    headline_list = "\n".join(
-        f"{i + 1}. {t['items'][0]['title']}" for i, t in enumerate(topics)
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    response = client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=max_tokens,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_prompt}],
+        tools=[{
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "max_uses": max_searches,
+        }],
     )
-    user_prompt = f"Headlines:\n{headline_list}\n\nReturn the JSON array of relevant numbers now."
+    text_parts = [block.text for block in response.content if getattr(block, "type", None) == "text"]
+    return "\n".join(text_parts).strip()
+
+def _call_gemini_with_search(system_prompt, user_prompt, max_tokens, max_searches):
+    """
+    Like _call_gemini, but grants Gemini its built-in Google Search
+    grounding tool for this one call. Google Search grounding and
+    forced JSON output aren't a reliable combination, so this always
+    returns plain text (the research brief format), never JSON --
+    unlike _call_gemini, which is only ever used for JSON-schema calls.
+    """
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=user_prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            tools=[types.Tool(google_search=types.GoogleSearch())],
+        ),
+    )
+    return (response.text or "").strip()
+
+def _call_llm_with_search(system_prompt, user_prompt, max_tokens, max_searches):
+    if LLM_PROVIDER == "anthropic":
+        if not ANTHROPIC_API_KEY:
+            raise ValueError("LLM_PROVIDER is 'anthropic' but ANTHROPIC_API_KEY is not set.")
+        return _call_anthropic_with_search(system_prompt, user_prompt, max_tokens, max_searches)
+    elif LLM_PROVIDER == "gemini":
+        if not GEMINI_API_KEY:
+            raise ValueError("LLM_PROVIDER is 'gemini' but GEMINI_API_KEY is not set.")
+        return _call_gemini_with_search(system_prompt, user_prompt, max_tokens, max_searches)
+    else:
+        raise ValueError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER!r} (expected 'anthropic' or 'gemini')")
+
+def research_additional_context(topic):
+    """
+    Runs a live web-search research pass for a topic that's about to be
+    drafted, looking for verifiable factual grounding beyond the
+    competitor RSS coverage already gathered (see article_fetch.py) --
+    catalog/chart data, documented prior statements, established
+    historical background, each tied to a real source URL. This is what
+    lets the drafting step (draft_article(), via DRAFT_SYSTEM_PROMPT
+    rule 2b) add genuine depth instead of just re-synthesizing the same
+    handful of competitor articles in different words.
+
+    Mutates topic in place, setting topic["research_notes"] to the
+    research brief text, or None if research is disabled, found nothing
+    usable, or the call failed for any reason. Never raises -- an
+    optional enhancement failing shouldn't fail the whole run, matching
+    the defensive pattern used throughout this module (see
+    filter_rock_relevant_topics, filter_duplicate_topics, and
+    verify_and_refine for the same fallback approach.
+
+    Note this is a separate step from image sourcing (article_fetch.py /
+    wikimedia.py / main.py's _get_featured_media_for_topic and
+    _insert_*_images helpers), which is untouched by this function and
+    continues to work exactly as before.
+    """
+    if not ENABLE_DEEP_RESEARCH:
+        topic["research_notes"] = None
+        return topic
+
+    source_material, _ = _build_source_material(topic)
+    headline = topic["items"][0]["title"]
+    user_prompt = (
+        f"Topic: {headline}\n\n"
+        f"Competitor coverage already gathered:\n\n{source_material}\n\n"
+        "Research additional verifiable context for this story now, following "
+        "the rules above. Respond with the plain-text bulleted brief (or NONE), "
+        "nothing else."
+    )
 
     try:
-        raw = _call_llm(RELEVANCE_SYSTEM_PROMPT, user_prompt, max_tokens=1000)
-        raw = _clean_json_text(raw)
-        indices = json.loads(raw)
-        keep_idx = {int(i) - 1 for i in indices}
+        raw = _call_llm_with_search(
+            RESEARCH_SYSTEM_PROMPT, user_prompt,
+            max_tokens=2000, max_searches=RESEARCH_MAX_SEARCHES,
+        )
     except Exception as e:
-        print(f"[warn] Rock-relevance filtering failed ({e}); proceeding without it "
-              f"(all {len(topics)} topics kept).")
-        return topics
+        print(f"[warn] Additional-research pass failed ({e}); drafting from "
+              f"competitor coverage only, same as before this feature existed.")
+        topic["research_notes"] = None
+        return topic
 
-    filtered = [t for i, t in enumerate(topics) if i in keep_idx]
-    print(f"[info] Rock-relevance filter kept {len(filtered)} of {len(topics)} topics.")
-    return filtered
+    if not raw or raw.strip().upper() == "NONE":
+        print("[info] Research pass found nothing additional worth adding for this topic.")
+        topic["research_notes"] = None
+    else:
+        print(f"[info] Research pass found additional grounding for this topic "
+              f"({len(raw.split(chr(10)))} line(s)).")
+        topic["research_notes"] = raw
+
+    return topic
 
 DUPLICATE_SYSTEM_PROMPT = """You are an editor for Deadikace, a rock music
 blog, checking new candidate news topics against a list of the blog's own
@@ -489,6 +688,36 @@ def filter_duplicate_topics(topics, existing_posts):
 
     return [t for i, t in enumerate(topics) if i not in dup_idx]
 
+def filter_rock_relevant_topics(topics):
+    """
+    Sends just the headlines (one batched call, not one per topic) to the
+    configured LLM and keeps only genuinely rock-relevant ones. Falls back
+    to keeping everything if the classification call fails for any reason
+    -- better to occasionally draft an off-topic article than to silently
+    drop every candidate topic due to a transient API error.
+    """
+    if not topics:
+        return topics
+
+    headline_list = "\n".join(
+        f"{i + 1}. {t['items'][0]['title']}" for i, t in enumerate(topics)
+    )
+    user_prompt = f"Headlines:\n{headline_list}\n\nReturn the JSON array of relevant numbers now."
+
+    try:
+        raw = _call_llm(RELEVANCE_SYSTEM_PROMPT, user_prompt, max_tokens=1000)
+        raw = _clean_json_text(raw)
+        indices = json.loads(raw)
+        keep_idx = {int(i) - 1 for i in indices}
+    except Exception as e:
+        print(f"[warn] Rock-relevance filtering failed ({e}); proceeding without it "
+              f"(all {len(topics)} topics kept).")
+        return topics
+
+    filtered = [t for i, t in enumerate(topics) if i in keep_idx]
+    print(f"[info] Rock-relevance filter kept {len(filtered)} of {len(topics)} topics.")
+    return filtered
+
 WITHIN_BATCH_DUPLICATE_SYSTEM_PROMPT = """You are an editor for Deadikace,
 a rock music blog, checking a batch of candidate news topics against EACH
 OTHER (not against older posts) to catch cases where the same underlying
@@ -516,7 +745,6 @@ Respond with ONLY a JSON array of the candidate numbers to REMOVE (i.e.
 the duplicates, not the one being kept), e.g. [2,5]. Respond with []
 if there are no duplicates. No other text.
 """
-
 
 def dedupe_topics_within_batch(topics):
     """
@@ -603,11 +831,24 @@ def _build_source_material(topic):
                 f"{video_lines}"
                 f"{image_lines}"
             )
+
+    research_notes = topic.get("research_notes")
+    if research_notes:
+        source_blocks.append(
+            "Additional Research Notes (independently gathered via live web "
+            "search, specifically for this topic -- treat exactly like the "
+            "numbered Source blocks above: every fact must be verifiable and "
+            "attributed to the URL given, never invent beyond what's stated "
+            "here; see DRAFT_SYSTEM_PROMPT rule 2b for how to use this):\n"
+            f"{research_notes}"
+        )
+
     return "\n\n".join(source_blocks), full_text_count
 
 def draft_article(topic):
     """topic: one cluster dict from discover.get_trending_topics(), ideally
     already enriched with full_text via article_fetch.enrich_topic_with_full_text
+    and, when available, research notes via research_additional_context().
 
     Returns a LIST of article dicts -- normally just one, but more than
     one if the model determined the source material actually covers
@@ -673,6 +914,11 @@ and implied reaction in the draft against the sources:
 - Flag and fix any stat/ranking that dropped its source attribution
   (e.g. "third-most-played... per setlist.fm" turned into an unqualified
   claim).
+- If a Sources & Further Reading section is present, confirm every link
+  in it corresponds to an actual URL given in the source material or
+  research notes -- flag and remove any link that doesn't (an invented
+  or mismatched source link is exactly the kind of fabricated-but-
+  plausible detail this pass exists to catch).
 
 PASS 2 -- READABILITY. Check the draft against these rules and fix any
 that are violated:
@@ -707,9 +953,9 @@ Respond with ONLY this JSON, nothing else:
 def verify_and_refine(article, topic):
     """
     Second pass: re-checks the drafted article against the same source
-    material and tightens up any embellishment/over-interpretation before
-    publishing. Falls back to the original article unchanged if the
-    verification call fails.
+    material (including any Additional Research Notes) and tightens up
+    any embellishment/over-interpretation before publishing. Falls back
+    to the original article unchanged if the verification call fails.
     """
     source_material, _ = _build_source_material(topic)
 
@@ -751,3 +997,4 @@ def verify_and_refine(article, topic):
 
     article["content_html"] = corrected_html
     return article
+
