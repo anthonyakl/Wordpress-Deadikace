@@ -25,7 +25,7 @@ import feedparser
 from config import (
     COMPETITOR_FEEDS, LOOKBACK_HOURS, MIN_SOURCE_COUNT,
     SOURCE_COUNT_WEIGHT, PRIORITY_KEYWORDS, PRIORITY_KEYWORD_BONUS,
-    EXCLUDE_KEYWORDS,
+    EXCLUDE_KEYWORDS, SOURCE_COVERAGE_WEIGHT,
 )
 
 
@@ -144,7 +144,16 @@ def _score_topic(topic, now):
         over LOOKBACK_HOURS
       - optional keyword boost for favorite bands/artists/genres
     """
-    coverage_score = topic["source_count"] * SOURCE_COUNT_WEIGHT
+    # Weighted coverage: counts each distinct outlet covering this story,
+    # but a metal-heavy outlet (see SOURCE_COVERAGE_WEIGHT in config.py)
+    # contributes less than a full point so it can't single-handedly push
+    # a borderline topic's ranking up. topic["source_count"] itself is
+    # left untouched (MIN_SOURCE_COUNT filtering and logging elsewhere
+    # still see the true outlet count) -- only this local ranking score
+    # is weighted.
+    distinct_sources = {item["source"] for item in topic["items"]}
+    weighted_coverage = sum(SOURCE_COVERAGE_WEIGHT.get(s, 1.0) for s in distinct_sources)
+    coverage_score = weighted_coverage * SOURCE_COUNT_WEIGHT
 
     if topic["most_recent"]:
         age_hours = (now - datetime.fromisoformat(topic["most_recent"])).total_seconds() / 3600
