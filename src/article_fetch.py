@@ -89,18 +89,18 @@ def fetch_source_image_url(url, html=None):
 def _extract_image_caption(html):
     """
     Best-effort extraction of a SHORT photo credit line near the
-    article's lead image, e.g. "Credit: Getty Images" rather than a full
-    descriptive caption. Earlier versions returned the whole figcaption
-    text (description + credit combined), but that's too long to display
-    as a corner overlay on the frontend without overlapping the title/
-    date on mobile. Looks for the first <figcaption>, then tries to pull
-    just the trailing credit/agency portion out of it; falls back to a
-    "Photo:" / "Credit:" style text pattern if no figcaption exists.
-    Returns None if nothing plausible is found -- callers should fall
-    back to a generic credit line in that case, not leave the field
-    empty in a way that looks broken.
+    article's lead image.
+
+    IMPORTANT: credit detection must never scan CSS or JavaScript as if it
+    were human-readable page text. A selector such as ``.image:after`` can
+    otherwise be mistaken for an ``Image:`` credit and produce garbage like
+    ``Credit: after{content...``.
     """
-    figcaption_match = re.search(r"<figcaption[^>]*>(.*?)</figcaption>", html, re.IGNORECASE | re.DOTALL)
+    figcaption_match = re.search(
+        r"<figcaption[^>]*>(.*?)</figcaption>",
+        html,
+        re.IGNORECASE | re.DOTALL,
+    )
     full_caption = None
     if figcaption_match:
         text = re.sub(r"<[^>]+>", " ", figcaption_match.group(1))
@@ -109,9 +109,34 @@ def _extract_image_caption(html):
             full_caption = text
 
     if not full_caption:
-        credit_match = re.search(r"((?:Photo|Image|Credit)\s*:\s*[^<\n]{3,150})", html, re.IGNORECASE)
+        # Remove code/style regions before looking for visible-text credit
+        # labels. Searching raw HTML caused CSS such as `.image:after` to be
+        # interpreted as a photo credit.
+        visible_html = re.sub(
+            r"<(?:style|script|noscript)[^>]*>.*?</(?:style|script|noscript)>",
+            " ",
+            html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        visible_text = re.sub(r"<[^>]+>", " ", visible_html)
+        visible_text = re.sub(r"\s+", " ", visible_text)
+
+        credit_match = re.search(
+            r"\b((?:Photo|Image|Credit)\s*:\s*[^|<>\n]{3,150})",
+            visible_text,
+            re.IGNORECASE,
+        )
         if credit_match:
-            full_caption = " ".join(credit_match.group(1).split())
+            candidate = " ".join(credit_match.group(1).split())
+            # Final sanity filter for anything that still looks like CSS/JS.
+            lowered = candidate.lower()
+            code_markers = (
+                "{", "}", ";", "content:", "display:", "padding-", "margin-",
+                "position:", "block;", "none;", "::before", "::after", ":after",
+                ":before", "function(", "var(",
+            )
+            if not any(marker in lowered for marker in code_markers):
+                full_caption = candidate
 
     if not full_caption:
         return None
@@ -126,13 +151,23 @@ def _shorten_to_credit(full_caption):
     returning None (caller falls back to a generic "Photo via {source}"
     line in that case).
     """
+    # Never turn stylesheet/script fragments into a public-facing credit.
+    lowered = full_caption.lower()
+    if any(marker in lowered for marker in (
+        "{", "}", ";", "content:", "display:", "padding-", "position:",
+        "::before", "::after", ":before", ":after", "function(", "var(",
+    )):
+        return None
+
     m = re.search(r"\bvia\s+([A-Z][\w.&'-]{2,40}(?:\s+[A-Z][\w.&'-]{1,40}){0,3})\s*\.?$", full_caption)
     if m:
         return f"Credit: {m.group(1).strip().rstrip('.')}"
 
     m = re.match(r"^(?:Photo|Image|Credit)\s*:\s*(.{2,60}?)(?:\.|,|$)", full_caption, re.IGNORECASE)
     if m:
-        return f"Credit: {m.group(1).strip()}"
+        credit = m.group(1).strip()
+        if credit and not any(ch in credit for ch in "{};"):
+            return f"Credit: {credit}"
 
     known_agencies = [
         "Getty Images", "Associated Press", "Reuters", "Shutterstock",
@@ -204,7 +239,7 @@ def _extract_article_body_html(html):
     Best-effort isolation of just the article body HTML, so video/heading
     extraction doesn't wander into sidebars, "related articles", or
     "you might also like" widgets elsewhere on the page. Those sections
-    often contain embedded videos for a COMPLETELY different story (this
+often contain embedded videos for a COMPLETELY different story (this
     is exactly how an unrelated video ended up attached to an article
     about a different artist entirely) -- scoping to <article> avoids
     picking those up. Falls back to the full page if no <article> tag is
