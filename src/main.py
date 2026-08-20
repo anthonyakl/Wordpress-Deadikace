@@ -6,6 +6,7 @@ Invoked on a schedule by the GitHub Actions workflow.
 import sys
 import time
 import re
+from difflib import SequenceMatcher
 
 from config import (
     MAX_ARTICLES_PER_RUN, POST_STATUS, TARGET_CATEGORY, LATEST_POSTS_COUNT,
@@ -23,14 +24,211 @@ from wordpress import (
     create_post, search_related_posts, check_connectivity, upload_media,
 )
 
+# Core Deadikace artists/bands. A matching recent topic receives a strong
+# priority boost before drafting, but it STILL has to pass the normal rock-
+# relevance and duplicate filters. Keeping this list here makes the editorial
+# priority explicit in the entry-point workflow instead of relying on a GitHub
+# secret that can silently be empty.
+LEGENDARY_ARTISTS = [
+    "led zeppelin", "pink floyd", "eric clapton", "mark knopfler",
+    "neil young", "jimmy page", "robert plant", "david gilmour",
+    "roger waters", "keith richards", "mick jagger", "the rolling stones",
+    "paul mccartney", "bob dylan", "bruce springsteen", "ac/dc", "metallica",
+    "ozzy osbourne", "black sabbath", "deep purple", "dire straits", "the who",
+    "fleetwood mac", "eagles", "aerosmith", "jimi hendrix", "cream", "the doors",
+    "janis joplin", "lynyrd skynyrd", "santana", "stevie ray vaughan",
+    "chuck berry", "elvis presley", "van halen", "guns n' roses", "bon jovi",
+    "iron maiden", "judas priest", "motorhead", "rush", "yes", "genesis",
+    "thin lizzy", "gary moore", "joe bonamassa", "jeff beck", "tina turner",
+    "the kinks", "the animals", "grateful dead", "steely dan", "zz top",
+    "queen", "the beatles", "john lennon", "george harrison", "ringo starr",
+    "david bowie", "elton john", "rod stewart", "tom petty", "alice cooper",
+    "kiss", "scorpions", "def leppard", "rainbow", "jethro tull", "king crimson",
+    "the clash", "ramones", "nirvana", "pearl jam", "soundgarden", "foo fighters",
+    "red hot chili peppers", "oasis", "the cure", "radiohead", "heart", "journey",
+    "foreigner", "kansas", "chicago", "creedence clearwater revival",
+]
+
+LEGENDARY_PRIORITY_BONUS = 80
+LEGENDARY_MAJOR_NEWS_BONUS = 40
+_MAJOR_NEWS_TERMS = (
+    " dies", " died", " dead", " death", " passes away", " passed away",
+    " obituary", " hospitalized", " hospitalised", " cancer", " health crisis",
+    " reunion", " reunites", " reunited", " breakup", " break-up", " retires",
+    " retirement",
+)
+
+# Deterministic duplicate guard. The LLM duplicate checker remains useful for
+# semantically different headlines, but this layer cannot disappear because of
+# a quota/API/JSON failure. It catches obvious same-story variants across
+# outlets, drafts, published posts, and different runs.
+_STORY_STOPWORDS = {
+    "the", "a", "an", "and", "or", "of", "in", "on", "for", "to", "with", "at",
+    "is", "are", "was", "were", "be", "been", "being", "as", "by", "from", "after",
+    "before", "into", "over", "about", "this", "that", "these", "those", "their",
+    "his", "her", "its", "new", "latest", "report", "reports", "says", "say",
+    "reveals", "revealed", "announces", "announced", "update", "news",
+}
+
+_OBVIOUS_METAL_PATTERNS = (
+    "metal band", "metal bands", "metal scene", "metal festival", "metal festivals",
+    "metal tour", "metal tours", "metal act", "metal acts", "metal album",
+    "death metal", "black metal", "doom metal", "sludge metal", "thrash metal",
+    "power metal", "symphonic metal", "progressive metal", "metalcore", "deathcore",
+    "djent", "nu-metal", "nu metal",
+)
+
+
+def _contains_artist(text, artist):
+    return re.search(r"(?<!\w)" + re.escape(artist) + r"(?!\w)", text, flags=re.IGNORECASE) is not None
+
+
+def _topic_text(topic):
+    parts = []
+    for item in topic.get("items", []):
+        parts.append(item.get("title", ""))
+        parts.append(item.get("summary", ""))
+    return " ".join(parts)
+
+
+def _apply_legendary_priority(topics):
+    """Boost and re-sort topics involving Deadikace's core artists."""
+    for topic in topics:
+        text = _topic_text(topic).lower()
+        matched = [artist for artist in LEGENDARY_ARTISTS if _contains_artist(text, artist)]
+        if not matched:
+            continue
+
+        bonus = LEGENDARY_PRIORITY_BONUS
+        if any(term in f" {text}" for term in _MAJOR_NEWS_TERMS):
+            bonus += LEGENDARY_MAJOR_NEWS_BONUS
+        topic["score"] = round(float(topic.get("score", 0)) + bonus, 1)
+        topic["legendary_priority"] = matched
+
+    topics.sort(key=lambda t: t.get("score", 0), reverse=True)
+    top_priority = [t for t in topics if t.get("legendary_priority")]
+    if top_priority:
+        preview = ", ".join(
+            f"{t['items'][0]['title']} (+{LEGENDARY_PRIORITY_BONUS} priority)"
+            for t in top_priority[:5]
+        )
+        print(f"[info] Legendary-artist priority applied: {preview}")
+    return topics
+
+
+def _drop_obvious_metal_topics(topics):
+    """
+    Hard safety net for clearly metal-specific stories.
+
+    Crossover legendary artists are left to the semantic relevance classifier,
+    so a broad Black Sabbath/Metallica/Ozzy story is not rejected just because
+    a source calls the artist metal. Generic stories like 'Indonesian Metal
+    Bands ...' are removed before they can consume an LLM call or draft slot.
+    """
+    kept = []
+    for topic in topics:
+        text = _topic_text(topic).lower()
+        legendary_match = any(_contains_artist(text, artist) for artist in LEGENDARY_ARTISTS)
+        if not legendary_match and any(pattern in text for pattern in _OBVIOUS_METAL_PATTERNS):
+            print(f"[info] Skipping obvious metal-specific topic: {topic['items'][0]['title']}")
+            continue
+        kept.append(topic)
+    return kept
+
+
+def _normalize_story_text(text):
+    text = re.sub(r"<[^>]+>", " ", text or "")
+    text = text.lower().replace("’", "'")
+    text = re.sub(r"[^a-z0-9'&/+.-]+", " ", text)
+    return " ".join(text.split())
+
+
+def _story_tokens(text):
+    normalized = _normalize_story_text(text)
+    return {
+        token.strip("'./+-")
+        for token in normalized.split()
+        if len(token.strip("'./+-")) >= 3
+        and token.strip("'./+-") not in _STORY_STOPWORDS
+    }
+
+
+def _is_probable_same_story(text_a, text_b):
+    """
+    Conservative deterministic same-story test.
+
+    It intentionally requires several meaningful shared terms, so two stories
+    about the same artist but different events (e.g. a tour vs. an obituary)
+    are not treated as duplicates merely because the artist name matches.
+    """
+    a = _normalize_story_text(text_a)
+    b = _normalize_story_text(text_b)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+
+    ta = _story_tokens(a)
+    tb = _story_tokens(b)
+    if not ta or not tb:
+        return False
+
+    overlap = len(ta & tb)
+    smaller = min(len(ta), len(tb))
+    union = len(ta | tb)
+    containment = overlap / smaller if smaller else 0
+    jaccard = overlap / union if union else 0
+    sequence = SequenceMatcher(None, a, b).ratio()
+
+    return (
+        (overlap >= 5 and containment >= 0.50)
+        or (overlap >= 4 and containment >= 0.62)
+        or (overlap >= 3 and jaccard >= 0.50)
+        or sequence >= 0.78
+    )
+
+
+def _post_text(post):
+    return f"{post.get('title', '')} {post.get('excerpt', '')}"
+
+
+def _topic_already_covered(topic, existing_posts):
+    candidate = _topic_text(topic)
+    return any(_is_probable_same_story(candidate, _post_text(post)) for post in existing_posts)
+
+
+def _article_already_covered(article, existing_posts):
+    candidate = f"{article.get('title', '')} {article.get('excerpt', '')}"
+    return any(_is_probable_same_story(candidate, _post_text(post)) for post in existing_posts)
+
+
+def _dedupe_against_posts_deterministic(topics, existing_posts):
+    kept = []
+    for topic in topics:
+        if _topic_already_covered(topic, existing_posts):
+            print(f"[info] Deterministic dedupe skipped existing story: {topic['items'][0]['title']}")
+            continue
+        kept.append(topic)
+    return kept
+
+
+def _dedupe_topics_deterministic(topics):
+    kept = []
+    kept_texts = []
+    for topic in topics:
+        text = _topic_text(topic)
+        if any(_is_probable_same_story(text, previous) for previous in kept_texts):
+            print(f"[info] Deterministic within-run dedupe skipped: {topic['items'][0]['title']}")
+            continue
+        kept.append(topic)
+        kept_texts.append(text)
+    return kept
+
+
 def _title_already_covered(title, existing_titles):
-    """Very simple duplicate guard based on shared significant words."""
-    title_words = {w.lower() for w in title.split() if len(w) > 4}
-    for existing in existing_titles:
-        existing_words = {w.lower() for w in existing.split() if len(w) > 4}
-        if title_words and len(title_words & existing_words) / len(title_words) > 0.6:
-            return True
-    return False
+    """Backward-compatible title guard using the stronger story matcher."""
+    return any(_is_probable_same_story(title, existing) for existing in existing_titles)
+
 
 def _strip_image_placeholders(content_html):
     """
@@ -45,6 +243,7 @@ def _strip_image_placeholders(content_html):
     for i in range(1, 10):
         content_html = content_html.replace(f"<!--IMAGE_{i}-->", "")
     return content_html
+
 
 def _get_featured_media_for_topic(topic, article_title, source_item_indices=None):
     """
@@ -76,10 +275,6 @@ def _get_featured_media_for_topic(topic, article_title, source_item_indices=None
         image_bytes, content_type = download_image_bytes(image_url)
         if not image_bytes:
             continue
-        # Prefer the source's own short credit line if we found one
-        # (e.g. "Credit: Getty Images"); fall back to a generic credit
-        # line naming the outlet if not -- both short enough to display
-        # as a corner overlay without overlapping the title/date.
         alt_text = item.get("image_caption") or f"Credit: {item.get('source', 'source article')}"
         try:
             media = upload_media(
@@ -96,6 +291,7 @@ def _get_featured_media_for_topic(topic, article_title, source_item_indices=None
                   f"(caption: {alt_text!r}).")
             return media["id"]
     return None
+
 
 def _insert_illustrative_images(article):
     """
@@ -176,6 +372,7 @@ def _insert_illustrative_images(article):
     article["content_html"] = content_html
     return article
 
+
 def _insert_video_embeds(article):
     """
     Processes article["video_embeds"] (proposed by the drafting model --
@@ -252,6 +449,7 @@ def _insert_video_embeds(article):
     article["content_html"] = content_html
     return article
 
+
 def _insert_source_images(article):
     """
     Processes article["source_images"] (proposed by the drafting model --
@@ -326,12 +524,14 @@ def _insert_source_images(article):
     article["content_html"] = content_html
     return article
 
+
 def _append_latest_posts_block(article, latest_posts):
     if not latest_posts:
         return
     items = "".join(f'<li><a href="{p["link"]}">{p["title"]}</a></li>' for p in latest_posts)
     block = f'<h2>Latest Posts</h2><ul class="deadikace-latest-posts">{items}</ul>'
     article["content_html"] += "\n" + block
+
 
 _BLOCK_PATTERN = re.compile(
     r"(?P<p><p>.*?</p>)"
@@ -342,6 +542,7 @@ _BLOCK_PATTERN = re.compile(
     r"|(?P<ul><ul[^>]*>.*?</ul>)",
     re.DOTALL,
 )
+
 
 def _blockify(content_html, font_size_px):
     """
@@ -374,6 +575,7 @@ def _blockify(content_html, font_size_px):
 
     return "\n\n".join(parts)
 
+
 def run():
     print("Checking connectivity to WordPress...")
     ok, error = check_connectivity()
@@ -397,6 +599,17 @@ def run():
         print("No topics found this run. Exiting.")
         return
 
+    # Apply Deadikace's own editorial priorities BEFORE the final selection.
+    # This ensures major news about ZZ Top, Pink Floyd, Led Zeppelin, etc. is
+    # not outranked by generic single-source listicles merely because of RSS
+    # timing. A death/major-health/reunion story gets an additional boost.
+    topics = _apply_legendary_priority(topics)
+
+    # Cheap deterministic safety net before spending an LLM call. This catches
+    # obvious off-topic cases such as "Indonesian Metal Bands..." even if the
+    # semantic relevance classifier later hits quota or returns malformed JSON.
+    topics = _drop_obvious_metal_topics(topics)
+
     print("Filtering for rock-relevant topics (some feeds cover all genres)...")
     topics = filter_rock_relevant_topics(topics)
 
@@ -404,16 +617,22 @@ def run():
         print("No rock-relevant topics found this run. Exiting.")
         return
 
-    print("Fetching recent Deadikace posts to avoid duplicates...")
-    existing_posts = get_recent_posts_for_dedup()
+    print("Fetching recent Deadikace posts/drafts to avoid duplicates...")
+    existing_posts = get_recent_posts_for_dedup(per_page=100)
     existing_titles = [p["title"] for p in existing_posts]
 
-    print("Checking candidate topics against recently published posts to avoid duplicate stories, even if they were covered by a different outlet...")
+    # First deterministic pass: this works even if Gemini/Claude duplicate
+    # classification is unavailable. Then keep the existing semantic LLM pass
+    # for harder differently-worded cases.
+    topics = _dedupe_against_posts_deterministic(topics, existing_posts)
+
+    print("Checking candidate topics against recently published posts/drafts to avoid duplicate stories, even if they were covered by a different outlet...")
     topics = filter_duplicate_topics(topics, existing_posts)
 
     print("Checking candidate topics against each other, in case topic clustering "
           "missed that two of them are actually the same underlying story...")
     topics = dedupe_topics_within_batch(topics)
+    topics = _dedupe_topics_deterministic(topics)
 
     print(f"Resolving target category '{TARGET_CATEGORY}'...")
     category_id = get_or_create_category(TARGET_CATEGORY)
@@ -426,7 +645,7 @@ def run():
             break
 
         headline = topic["items"][0]["title"]
-        if _title_already_covered(headline, existing_titles):
+        if _topic_already_covered(topic, existing_posts) or _title_already_covered(headline, existing_titles):
             print(f"Skipping (likely already covered): {headline}")
             continue
 
@@ -449,9 +668,6 @@ def run():
         except Exception as e:
             error_text = str(e)
             print(f"[error] Failed to draft article for '{headline}': {e}")
-            # If the LLM provider is out of quota/credits, retrying on the next
-            # topic will just fail the same way -- stop the whole run instead
-            # of burning through every remaining topic with the same error.
             if ("RESOURCE_EXHAUSTED" in error_text or "429" in error_text
                     or "insufficient_quota" in error_text
                     or "NOT_FOUND" in error_text or "404" in error_text):
@@ -470,6 +686,14 @@ def run():
             if published_count >= MAX_ARTICLES_PER_RUN:
                 break
 
+            # Final in-memory duplicate guard before doing any media upload or
+            # WordPress write. This is especially important when one topic was
+            # split into multiple drafts or another post was created earlier in
+            # this same workflow run.
+            if _article_already_covered(article, existing_posts):
+                print(f"[info] Final duplicate guard skipped: {article.get('title', headline)}")
+                continue
+
             print("Fact-checking the draft against the source material...")
             try:
                 article = verify_and_refine(article, topic)
@@ -477,7 +701,12 @@ def run():
                 print(f"[warn] Fact-check pass raised an unexpected error ({e}); "
                       "publishing the original draft unchanged.")
 
-            # Add a couple of internal links for SEO if related posts exist
+            # Check once more after refinement in case the final title/excerpt
+            # became closer to an existing post than the initial draft was.
+            if _article_already_covered(article, existing_posts):
+                print(f"[info] Final duplicate guard skipped after refinement: {article.get('title', headline)}")
+                continue
+
             related = search_related_posts(article.get("focus_keyword", headline))
             if related:
                 links_html = "<p>Related reading: " + ", ".join(
@@ -485,10 +714,6 @@ def run():
                 ) + "</p>"
                 article["content_html"] += "\n" + links_html
 
-            # Strip any leftover image placeholders the model might still
-            # emit, then try to use the source article's own preview image
-            # as the featured image (see IMAGE SOURCING NOTE in
-            # article_fetch.py for the copyright tradeoff this involves).
             article["content_html"] = _strip_image_placeholders(article["content_html"])
             featured_media_id = (
                 _get_featured_media_for_topic(
@@ -497,28 +722,10 @@ def run():
                 if ENABLE_SOURCE_IMAGES else None
             )
 
-            # Insert any illustrative images the drafting model proposed
-            # (see rule 4c in DRAFT_SYSTEM_PROMPT), before appending the
-            # "Latest Posts" block so images land within the article body,
-            # not after the recirculation block.
             article = _insert_illustrative_images(article)
-
-            # Insert any source-body images the drafting model proposed
-            # (see rule 4f in DRAFT_SYSTEM_PROMPT) -- e.g. promotional
-            # artwork Wikimedia had no free-licensed version of.
             article = _insert_source_images(article)
-
-            # Append the "Latest Posts" block
             _append_latest_posts_block(article, latest_posts)
-
-            # Convert to real Gutenberg blocks (keeps the post editable in the
-            # block editor) with the medium font size applied per-paragraph
             article["content_html"] = _blockify(article["content_html"], ARTICLE_FONT_SIZE_PX)
-
-            # Embed any videos the drafting model matched from the source
-            # (see rule 4d in DRAFT_SYSTEM_PROMPT). Must run AFTER
-            # _blockify() -- see the docstring on _insert_video_embeds for
-            # why.
             article = _insert_video_embeds(article)
 
             try:
@@ -529,9 +736,22 @@ def run():
 
             print(f"Created post (status={POST_STATUS}): {result.get('link', result.get('id'))}")
             published_count += 1
-            time.sleep(2)  # be polite to the WP API between requests, and between multiple articles from one split topic
+
+            # CRITICAL: immediately add the new draft/published post to the
+            # in-memory dedupe pool. Without this, a later candidate in the SAME
+            # run can cover the same event because WordPress was only queried at
+            # the beginning of the run.
+            new_post = {
+                "title": article.get("title", headline),
+                "excerpt": article.get("excerpt", ""),
+            }
+            existing_posts.append(new_post)
+            existing_titles.append(new_post["title"])
+
+            time.sleep(2)
 
     print(f"Done. Published/drafted {published_count} article(s) this run.")
+
 
 if __name__ == "__main__":
     try:
@@ -539,5 +759,3 @@ if __name__ == "__main__":
     except KeyError as e:
         print(f"[fatal] Missing required environment variable: {e}")
         sys.exit(1)
-
-                
