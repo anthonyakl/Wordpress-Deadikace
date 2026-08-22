@@ -9,7 +9,7 @@ the WordPress `Authorization` header is preserved unchanged.
 
 1. Create a Worker on Cloudflare's free plan using `src/index.js`.
 2. Add an encrypted Worker secret named `PROXY_TOKEN` containing a long,
-   randomly generated value. Do not put the value in `wrangler.toml`.
+   randomly generated value. Do not put the value in `wrangler.jsonc`.
 3. Deploy the Worker and copy its `https://...workers.dev` URL.
 
 ## GitHub setup

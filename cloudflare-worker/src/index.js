@@ -1,16 +1,18 @@
 const WORDPRESS_ORIGIN = "https://www.deadikace.com";
 const TOKEN_HEADER = "X-Deadikace-Proxy-Token";
 
-function safeEqual(left, right) {
-  if (!left || !right || left.length !== right.length) return false;
-  let different = 0;
-  for (let i = 0; i < left.length; i++) different |= left.charCodeAt(i) ^ right.charCodeAt(i);
-  return different === 0;
+async function tokenMatches(provided, expected) {
+  if (!provided || !expected) return false;
+  const encoder = new TextEncoder();
+  const left = encoder.encode(provided);
+  const right = encoder.encode(expected);
+  if (left.byteLength !== right.byteLength) return false;
+  return crypto.subtle.timingSafeEqual(left, right);
 }
 
 export default {
   async fetch(request, env) {
-    if (!safeEqual(request.headers.get(TOKEN_HEADER), env.PROXY_TOKEN)) {
+    if (!(await tokenMatches(request.headers.get(TOKEN_HEADER), env.PROXY_TOKEN))) {
       return new Response("Unauthorized", { status: 401 });
     }
 
@@ -28,8 +30,6 @@ export default {
     headers.delete("cf-ipcountry");
     headers.delete("cf-ray");
     headers.delete("cf-visitor");
-    headers.set("Host", target.host);
-
     return fetch(target, {
       method: request.method,
       headers,

@@ -1,5 +1,0 @@
-name = "deadikace-wordpress-proxy"
-main = "src/index.js"
-compatibility_date = "2026-08-22"
-
-# Set PROXY_TOKEN with `wrangler secret put PROXY_TOKEN`; never add it here.
