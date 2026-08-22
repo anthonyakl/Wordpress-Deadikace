@@ -40,6 +40,8 @@ def _env_list(key, default_csv):
 
 # --- WordPress site ---
 WP_BASE_URL = _env("WP_BASE_URL", "https://www.deadikace.com")
+WP_API_BASE_URL = _env("WP_API_BASE_URL", WP_BASE_URL)
+WP_PROXY_TOKEN = _env("WP_PROXY_TOKEN")
 WP_USERNAME = os.environ["WP_USERNAME"]  # your WP username
 WP_APP_PASSWORD = os.environ["WP_APP_PASSWORD"]  # WP Application Password (not your login password)
 
