@@ -12,13 +12,14 @@ from requests.auth import HTTPBasicAuth
 from urllib3.util.retry import Retry
 
 from config import (
-    WP_BASE_URL, WP_USERNAME, WP_APP_PASSWORD, POST_STATUS,
+    WP_BASE_URL, WP_API_BASE_URL, WP_PROXY_TOKEN,
+    WP_USERNAME, WP_APP_PASSWORD, POST_STATUS,
     YOAST_TITLE_FIELD, YOAST_META_DESC_FIELD, YOAST_FOCUS_KEYWORD_FIELD,
 )
 
 AUTH = HTTPBasicAuth(WP_USERNAME, WP_APP_PASSWORD)
 REQUEST_TIMEOUT = 45
-_ACTIVE_BASE_URL = WP_BASE_URL.rstrip("/")
+_ACTIVE_BASE_URL = WP_API_BASE_URL.rstrip("/")
 
 # Some hosts (Hostinger included) can intermittently drop connections from
 # datacenter IPs such as GitHub Actions runners. Keep retries for normal API
@@ -35,6 +36,8 @@ _session.headers.update({
     "User-Agent": "Deadikace-WordPress-Agent/1.0 (+https://deadikace.com)",
     "Accept": "application/json, */*;q=0.8",
 })
+if WP_PROXY_TOKEN:
+    _session.headers["X-Deadikace-Proxy-Token"] = WP_PROXY_TOKEN
 _session.mount("https://", HTTPAdapter(max_retries=_retry))
 _session.mount("http://", HTTPAdapter(max_retries=_retry))
 
@@ -45,8 +48,13 @@ def _api_root():
 
 def _base_url_candidates():
     """Return configured URL plus the equivalent www/non-www hostname."""
-    configured = WP_BASE_URL.rstrip("/")
+    configured = WP_API_BASE_URL.rstrip("/")
     candidates = [configured]
+
+    # A proxy URL is a distinct service, not an alternate spelling of the
+    # public WordPress hostname. Never synthesize www/non-www proxy hosts.
+    if configured != WP_BASE_URL.rstrip("/"):
+        return candidates
 
     parsed = urlsplit(configured)
     hostname = parsed.hostname
@@ -84,6 +92,7 @@ def check_connectivity():
                 headers={
                     "User-Agent": "Deadikace-WordPress-Agent/1.0 (+https://deadikace.com)",
                     "Accept": "application/json, */*;q=0.8",
+                    **({"X-Deadikace-Proxy-Token": WP_PROXY_TOKEN} if WP_PROXY_TOKEN else {}),
                 },
                 timeout=(12, 20),
                 allow_redirects=True,
@@ -102,7 +111,7 @@ def check_connectivity():
             else:
                 _ACTIVE_BASE_URL = base_url
 
-            if _ACTIVE_BASE_URL != WP_BASE_URL.rstrip("/"):
+            if _ACTIVE_BASE_URL != WP_API_BASE_URL.rstrip("/"):
                 print(
                     f"[info] WordPress connectivity succeeded via {_ACTIVE_BASE_URL}; "
                     "using this hostname for the rest of the run."

@@ -1,0 +1,31 @@
+name: WordPress Connectivity Check
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests
+      - name: Test WordPress REST connectivity (read-only)
+        working-directory: src
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_API_BASE_URL: ${{ secrets.WP_API_BASE_URL }}
+          WP_PROXY_TOKEN: ${{ secrets.WP_PROXY_TOKEN }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+        run: |
+          python - <<'PY'
+          import wordpress
+          ok, error = wordpress.check_connectivity()
+          if not ok:
+              raise SystemExit(f"Connectivity check failed: {error}")
+          posts = wordpress.get_recent_posts_for_dedup(per_page=1)
+          print(f"Authenticated read succeeded; received {len(posts)} post record(s).")
+          PY

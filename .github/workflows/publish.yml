@@ -25,6 +25,8 @@ jobs:
         working-directory: src
         env:
           WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_API_BASE_URL: ${{ secrets.WP_API_BASE_URL }}
+          WP_PROXY_TOKEN: ${{ secrets.WP_PROXY_TOKEN }}
           WP_USERNAME: ${{ secrets.WP_USERNAME }}
           WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
           LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}
