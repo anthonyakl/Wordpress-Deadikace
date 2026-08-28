@@ -293,6 +293,14 @@ def _get_featured_media_for_topic(topic, article_title, source_item_indices=None
                 filename=article_title,
                 alt_text=alt_text,
                 content_type=content_type,
+                # Passed separately from filename= (which stays the article
+                # title so the media library file itself is named sensibly)
+                # so the attachment's title/caption fields -- what the theme
+                # actually displays as the hero image's credit overlay --
+                # get the real photo credit instead of defaulting to a
+                # sanitized version of the article title. See upload_media's
+                # docstring in wordpress.py.
+                caption=alt_text,
             )
         except Exception as e:
             print(f"[warn] Failed to upload source image to WordPress media library: {e}")
@@ -353,6 +361,7 @@ def _insert_illustrative_images(article, featured_image_hash=None):
                 filename=result["title"] or query,
                 alt_text=caption_text,
                 content_type=content_type,
+                caption=caption_text,
             )
         except Exception as e:
             print(f"[warn] Failed to upload illustrative image to WordPress media library: {e}")
@@ -517,12 +526,14 @@ def _insert_source_images(article, featured_image_hash=None):
             continue
 
         caption = (img_entry.get("caption") or "").strip()
+        caption_or_fallback = caption or "Photo via source article"
         try:
             media = upload_media(
                 image_bytes,
                 filename=article["title"],
-                alt_text=caption or "Photo via source article",
+                alt_text=caption_or_fallback,
                 content_type=content_type,
+                caption=caption_or_fallback,
             )
         except Exception as e:
             print(f"[warn] Failed to upload source-body image to WordPress media library: {e}")
