@@ -142,13 +142,90 @@ def fetch_source_image_url(url, html=None):
     caption_text = _find_caption_for_image_url(html, image_url) or _extract_image_caption(html)
     return image_url, caption_text
 
+_PLACEHOLDER_SRC_MARKERS = (
+    "data:image", "blank.gif", "spacer.gif", "1x1.", "1x1-", "/1x1",
+    "placeholder", "lazyload", "lazy-load", "transparent.gif", "svg+xml",
+)
+
+
+def _is_placeholder_src(url):
+    """True for the tiny/blank stand-in images lazy-load plugins put in the
+    real `src` attribute (a 1x1 gif, an inline base64/SVG blob, or an
+    obviously-named blank/placeholder file) while the actual photo URL sits
+    in a data-* attribute or srcset instead."""
+    if not url:
+        return True
+    lowered = url.lower()
+    return any(marker in lowered for marker in _PLACEHOLDER_SRC_MARKERS)
+
+
+def _best_img_src(tag):
+    """
+    Returns the most likely REAL image URL for an <img> tag.
+
+    Many news sites lazy-load every image: the plain `src` attribute holds
+    a placeholder (typically listed BEFORE the real URL in the markup, e.g.
+    `<img src="data:image/gif;base64,..." data-src="https://.../photo.jpg">`)
+    and the actual photo URL lives in `data-src` (or a similar `data-*`
+    attribute, or `srcset`) instead. Matching only a plain `src=...` was
+    silently grabbing that placeholder, which broke two things at once:
+    the featured/body image de-duplication (the body <img>'s placeholder
+    src could never match the featured image's real og:image URL, so the
+    "already used as featured image" exclusion never fired and the same
+    photo got inserted twice) and caption matching (for the same reason,
+    _find_caption_for_image_url couldn't locate the right <img> tag,
+    falling back to a much less precise page-wide credit-line scan).
+    Returns None if no plausible URL can be found at all.
+    """
+    src_match = re.search(r'\bsrc=["\']([^"\']+)["\']', tag, re.IGNORECASE)
+    if src_match and not _is_placeholder_src(src_match.group(1)):
+        return src_match.group(1)
+
+    for attr in ("data-src", "data-lazy-src", "data-original", "data-lazyload", "data-srcset", "srcset"):
+        m = re.search(re.escape(attr) + r'=["\']([^"\']+)["\']', tag, re.IGNORECASE)
+        if not m:
+            continue
+        candidate = m.group(1)
+        if attr.endswith("srcset"):
+            # srcset is a comma-separated list of "url descriptor" pairs;
+            # take the URL from the first entry.
+            candidate = candidate.split(",")[0].strip().split(" ")[0]
+        if candidate and not _is_placeholder_src(candidate):
+            return candidate
+
+    # Last resort: the placeholder src is better than nothing for a
+    # caller that just needs SOME url, but never for normalization/dedup
+    # comparisons, so return None rather than a known-bogus placeholder.
+    return None
+
+
+def _clean_tag_text(inner_html):
+    """Strips tags from an HTML fragment and collapses whitespace."""
+    text = re.sub(r"<[^>]+>", " ", inner_html)
+    return " ".join(text.split())
+
+
 def _find_caption_for_image_url(html, image_url):
     """
     Finds the caption text actually attached to the <img> tag in html whose
     src matches image_url (via _normalize_image_key, so a resized/CDN
-    variant of the same photo still matches). Prefers a <figcaption> inside
-    the nearest enclosing <figure>, falling back to the img's own alt text.
-    Returns None if no matching <img> tag is found.
+    variant of the same photo still matches, and via _best_img_src, so a
+    lazy-loaded image's real data-src/srcset URL is compared, not a blank
+    placeholder). Returns None if no matching <img> tag is found.
+
+    Checks, in order, within a window immediately around the matched <img>
+    tag:
+      1. A real <figcaption> (HTML5 markup).
+      2. Classic WordPress [caption]-shortcode markup: the image is wrapped
+         in a <div class="wp-caption">, with the caption in a SEPARATE
+         following element (typically <p class="wp-caption-text">, NOT a
+         <figcaption>) -- this is how most WordPress themes/sites (i.e.
+         most of the sites this agent scrapes) actually render a photo
+         credit, so a matcher that only understood <figcaption> was
+         silently missing the caption on any of them. Matched generically
+         by class name containing "caption" so theme-specific class names
+         (wp-caption-text, caption-text, photo-caption, etc.) all work.
+      3. The img's own alt text, as a last resort.
     """
     target_key = _normalize_image_key(image_url)
     if not target_key:
@@ -156,24 +233,30 @@ def _find_caption_for_image_url(html, image_url):
 
     for m in re.finditer(r"<img[^>]+>", html, re.IGNORECASE):
         tag = m.group(0)
-        src_match = re.search(r'src=["\']([^"\']+)["\']', tag, re.IGNORECASE)
-        if not src_match or _normalize_image_key(src_match.group(1)) != target_key:
+        candidate_src = _best_img_src(tag)
+        if not candidate_src or _normalize_image_key(candidate_src) != target_key:
             continue
 
-        figure_start = html.rfind("<figure", 0, m.start())
-        if figure_start != -1:
-            figure_end = html.find("</figure>", m.end())
-            if figure_end != -1:
-                fc_match = re.search(
-                    r"<figcaption[^>]*>(.*?)</figcaption>",
-                    html[figure_start:figure_end],
-                    re.IGNORECASE | re.DOTALL,
-                )
-                if fc_match:
-                    text = re.sub(r"<[^>]+>", " ", fc_match.group(1))
-                    text = " ".join(text.split())
-                    if text and len(text) < 300:
-                        return text
+        window_start = max(0, m.start() - 200)
+        window_end = min(len(html), m.end() + 600)
+        window = html[window_start:window_end]
+
+        fc_match = re.search(
+            r"<figcaption[^>]*>(.*?)</figcaption>", window, re.IGNORECASE | re.DOTALL,
+        )
+        if fc_match:
+            text = _clean_tag_text(fc_match.group(1))
+            if text and len(text) < 300:
+                return text
+
+        cap_match = re.search(
+            r'<(p|div|span)[^>]+class=["\'][^"\']*caption[^"\']*["\'][^>]*>(.*?)</\1>',
+            window, re.IGNORECASE | re.DOTALL,
+        )
+        if cap_match:
+            text = _clean_tag_text(cap_match.group(2))
+            if text and len(text) < 300:
+                return text
 
         alt_match = re.search(r'alt=["\']([^"\']*)["\']', tag, re.IGNORECASE)
         if alt_match:
@@ -215,11 +298,32 @@ def _extract_image_caption(html):
             html,
             flags=re.IGNORECASE | re.DOTALL,
         )
+        # Mark block-level/line boundaries with "|" BEFORE stripping tags,
+        # so the credit_match regex's "stop at |" exclusion actually has
+        # something to stop at. Without this, every tag (including
+        # paragraph breaks) collapsed to a plain space just like normal
+        # inline whitespace, so a credit line with no closing "." bled
+        # straight into the start of the next paragraph's text (e.g.
+        # "Image credit: Paul Natkin/WireImage" + the next <p>'s content
+        # got captured as one run-on string).
+        visible_html = re.sub(
+            r"</?(?:p|div|li|ul|ol|h[1-6]|tr|td|th|table|blockquote|figcaption|figure|br|section|article)[^>]*>",
+            "|", visible_html, flags=re.IGNORECASE,
+        )
         visible_text = re.sub(r"<[^>]+>", " ", visible_html)
-        visible_text = re.sub(r"\s+", " ", visible_text)
+        visible_text = re.sub(r"[ \t]+", " ", visible_text)
+        visible_text = re.sub(r"\s*\|\s*", "|", visible_text)
 
+        # Try compound phrases ("Photo credit"/"Image credit") BEFORE the
+        # bare single-word alternatives. re.search picks the leftmost
+        # starting position in the text, and at a given starting position
+        # tries alternatives in the order listed -- so without this
+        # ordering, a phrase like "Image credit: Paul Natkin/WireImage"
+        # matched on the bare "Credit" alternative starting mid-phrase
+        # (case-insensitively, "credit" inside "Image credit"), silently
+        # dropping the "Image " prefix from the captured text.
         credit_match = re.search(
-            r"\b((?:Photo|Image|Credit)\s*:\s*[^|<>\n]{3,150})",
+            r"\b((?:Photo\s+credit|Image\s+credit|Photo|Image|Credit)\s*:\s*[^|<>\n]{3,150})",
             visible_text,
             re.IGNORECASE,
         )
@@ -238,43 +342,14 @@ def _extract_image_caption(html):
     if not full_caption:
         return None
 
-    return _shorten_to_credit(full_caption)
-
-def _shorten_to_credit(full_caption):
-    """
-    Reduces a full scraped caption down to just a short "Credit: X" line,
-    since the corner overlay only has room for a short credit, not a
-    full description. Tries a few common patterns before giving up and
-    returning None (caller falls back to a generic "Photo via {source}"
-    line in that case).
-    """
-    # Never turn stylesheet/script fragments into a public-facing credit.
-    lowered = full_caption.lower()
-    if any(marker in lowered for marker in (
-        "{", "}", ";", "content:", "display:", "padding-", "position:",
-        "::before", "::after", ":before", ":after", "function(", "var(",
-    )):
-        return None
-
-    m = re.search(r"\bvia\s+([A-Z][\w.&'-]{2,40}(?:\s+[A-Z][\w.&'-]{1,40}){0,3})\s*\.?$", full_caption)
-    if m:
-        return f"Credit: {m.group(1).strip().rstrip('.')}"
-
-    m = re.match(r"^(?:Photo|Image|Credit)\s*:\s*(.{2,60}?)(?:\.|,|$)", full_caption, re.IGNORECASE)
-    if m:
-        credit = m.group(1).strip()
-        if credit and not any(ch in credit for ch in "{};"):
-            return f"Credit: {credit}"
-
-    known_agencies = [
-        "Getty Images", "Associated Press", "Reuters", "Shutterstock",
-        "WireImage", "AFP", "Redferns", "FilmMagic",
-    ]
-    for agency in known_agencies:
-        if agency.lower() in full_caption.lower():
-            return f"Credit: {agency}"
-
-    return None
+    # Return the found credit text as-is (just length-capped), rather than
+    # mangling it down to a bare "Credit: {agency}" -- that previous
+    # shortening step was dropping real information (e.g. reducing
+    # "Image credit: Paul Natkin/WireImage" to just "Credit: WireImage",
+    # losing the photographer's name) in exchange for brevity nobody asked
+    # for. A caption up to a couple hundred characters is fine for a media
+    # caption/alt field.
+    return full_caption[:250].rstrip()
 
 def download_image_bytes(image_url, max_bytes=8_000_000):
     """Downloads an image and returns (bytes, content_type), or (None, None) on failure."""
@@ -415,10 +490,14 @@ def extract_body_images(html, exclude_url_fragment=None, max_images=4):
             break
         tag = m.group(0)
 
-        src_match = re.search(r'src=["\']([^"\']+)["\']', tag, re.IGNORECASE)
-        if not src_match:
+        # _best_img_src (not a plain src= match) so a lazy-loaded image's
+        # real data-src/srcset URL is what gets compared and returned, not
+        # a blank/base64 placeholder -- a placeholder can never match the
+        # featured image's real og:image URL, which was letting the exact
+        # same photo through as a second "body image" candidate again.
+        src = _best_img_src(tag)
+        if not src:
             continue
-        src = src_match.group(1)
         src_key = _normalize_image_key(src)
         # Compare by normalized key, not raw URL: the featured image (from
         # og:image) and this same photo's <img src> inside the body are
