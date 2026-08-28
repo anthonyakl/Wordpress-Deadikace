@@ -28,11 +28,61 @@ tradeoff the site owner has chosen (image relevance over image licensing
 certainty) after weighing both options, not a default best practice.
 """
 
+import hashlib
 import re
+from urllib.parse import urlsplit
+
 import requests
 import trafilatura
 
 USER_AGENT = "DeadikaceAgent/1.0 (https://www.deadikace.com)"
+
+
+def _normalize_image_key(url):
+    """
+    Reduces an image URL down to a comparable "same underlying photo" key,
+    ignoring things that differ between two URLs that are really just
+    different renditions of the same source image:
+      - scheme/host (a CDN can serve the same photo from several hosts)
+      - query string (cache-busting/resize params)
+      - a trailing WordPress-style resize suffix like "-1024x683" or a
+        retina suffix like "@2x" right before the extension
+
+    This matters because the og:image URL (used for the featured image)
+    and the <img src> for that same photo inside the article body are very
+    often two different-sized renditions of one image, e.g.
+    ".../photo-1200x630.jpg" (og:image) vs ".../photo-780x520.jpg" (body).
+    A plain substring/equality check on the raw URLs misses this and lets
+    the same photo get pulled in twice -- once as the featured image, once
+    again as an inline "source image" -- which is the main image-duplication
+    bug this key exists to prevent. Returns "" if no usable filename can be
+    extracted (comparisons against "" never match).
+    """
+    if not url:
+        return ""
+    path = urlsplit(url).path
+    filename = path.rsplit("/", 1)[-1]
+    if not filename:
+        return ""
+    stem, dot, ext = filename.rpartition(".")
+    if not dot:
+        stem, ext = filename, ""
+    stem = re.sub(r"-\d{2,5}x\d{2,5}$", "", stem, flags=re.IGNORECASE)
+    stem = re.sub(r"@\d+x$", "", stem, flags=re.IGNORECASE)
+    return f"{stem.lower()}.{ext.lower()}" if dot else stem.lower()
+
+
+def image_bytes_hash(image_bytes):
+    """
+    SHA-256 hex digest of raw image bytes, or None. Used as a last-resort,
+    belt-and-suspenders duplicate check (in addition to _normalize_image_key)
+    right before an image actually gets inserted, since two different URLs
+    can still resolve to byte-for-byte the same file in ways no URL-based
+    heuristic can anticipate.
+    """
+    if not image_bytes:
+        return None
+    return hashlib.sha256(image_bytes).hexdigest()
 
 def fetch_article_text(url, max_chars=5000):
     """Returns extracted main article text, or None if fetching/extraction fails."""
@@ -83,8 +133,55 @@ def fetch_source_image_url(url, html=None):
     image_url = metadata.image if metadata else None
     if not image_url:
         return None, None
-    caption_text = _extract_image_caption(html)
+    # Prefer the caption/alt text tied to this SPECIFIC image (the one that
+    # will be reused as the featured image), so the featured image's caption
+    # matches what a reader sees on that same photo inside the article body
+    # -- not a generic "Credit: {source}" line. Falls back to a page-wide
+    # credit-line scan only if that specific image tag can't be found (e.g.
+    # lazy-loaded via data-src/srcset instead of a plain src attribute).
+    caption_text = _find_caption_for_image_url(html, image_url) or _extract_image_caption(html)
     return image_url, caption_text
+
+def _find_caption_for_image_url(html, image_url):
+    """
+    Finds the caption text actually attached to the <img> tag in html whose
+    src matches image_url (via _normalize_image_key, so a resized/CDN
+    variant of the same photo still matches). Prefers a <figcaption> inside
+    the nearest enclosing <figure>, falling back to the img's own alt text.
+    Returns None if no matching <img> tag is found.
+    """
+    target_key = _normalize_image_key(image_url)
+    if not target_key:
+        return None
+
+    for m in re.finditer(r"<img[^>]+>", html, re.IGNORECASE):
+        tag = m.group(0)
+        src_match = re.search(r'src=["\']([^"\']+)["\']', tag, re.IGNORECASE)
+        if not src_match or _normalize_image_key(src_match.group(1)) != target_key:
+            continue
+
+        figure_start = html.rfind("<figure", 0, m.start())
+        if figure_start != -1:
+            figure_end = html.find("</figure>", m.end())
+            if figure_end != -1:
+                fc_match = re.search(
+                    r"<figcaption[^>]*>(.*?)</figcaption>",
+                    html[figure_start:figure_end],
+                    re.IGNORECASE | re.DOTALL,
+                )
+                if fc_match:
+                    text = re.sub(r"<[^>]+>", " ", fc_match.group(1))
+                    text = " ".join(text.split())
+                    if text and len(text) < 300:
+                        return text
+
+        alt_match = re.search(r'alt=["\']([^"\']*)["\']', tag, re.IGNORECASE)
+        if alt_match:
+            alt_text = " ".join(alt_match.group(1).split())
+            if alt_text and len(alt_text) < 300:
+                return alt_text
+
+    return None
 
 def _extract_image_caption(html):
     """
@@ -310,7 +407,8 @@ def extract_body_images(html, exclude_url_fragment=None, max_images=4):
     """
     body_html = _extract_article_body_html(html)
     results = []
-    seen_srcs = set()
+    seen_keys = set()
+    exclude_key = _normalize_image_key(exclude_url_fragment) if exclude_url_fragment else None
 
     for m in re.finditer(r"<img[^>]+>", body_html, re.IGNORECASE):
         if len(results) >= max_images:
@@ -321,9 +419,17 @@ def extract_body_images(html, exclude_url_fragment=None, max_images=4):
         if not src_match:
             continue
         src = src_match.group(1)
-        if src in seen_srcs:
+        src_key = _normalize_image_key(src)
+        # Compare by normalized key, not raw URL: the featured image (from
+        # og:image) and this same photo's <img src> inside the body are
+        # frequently different-sized renditions of one file (see
+        # _normalize_image_key), so a plain substring/equality check on the
+        # raw URLs was letting the same photo through as a second "body
+        # image" candidate -- which is how it ended up duplicated in both
+        # the hero featured image and again inline in the post.
+        if src_key and src_key in seen_keys:
             continue
-        if exclude_url_fragment and exclude_url_fragment in src:
+        if exclude_key and src_key == exclude_key:
             continue
 
         width_match = re.search(r'width=["\']?(\d+)', tag, re.IGNORECASE)
@@ -336,7 +442,8 @@ def extract_body_images(html, exclude_url_fragment=None, max_images=4):
         alt_match = re.search(r'alt=["\']([^"\']*)["\']', tag, re.IGNORECASE)
         alt_text = alt_match.group(1).strip() if alt_match else ""
 
-        seen_srcs.add(src)
+        if src_key:
+            seen_keys.add(src_key)
         results.append({
             "url": src,
             "alt": alt_text,
