@@ -226,10 +226,22 @@ def search_related_posts(keyword, limit=3):
     return [{"title": p["title"]["rendered"], "link": p["link"]} for p in resp.json()]
 
 
-def upload_media(image_bytes, filename, alt_text="", content_type="image/jpeg"):
+def upload_media(image_bytes, filename, alt_text="", content_type="image/jpeg", caption=""):
     """
     Uploads an image to the WordPress media library.
     Returns dict with id and source_url, or None on failure.
+
+    caption, when given, is written to BOTH the attachment's "caption"
+    field (post_excerpt) and its "title" field, not just alt_text. This
+    matters because the upload endpoint auto-derives the attachment title
+    from the Content-Disposition filename -- and the featured-image caller
+    passes the ARTICLE title as that filename (so the file is named
+    sensibly in the media library), not the photo credit. A theme that
+    displays the featured image's title or caption as an overlay (as
+    opposed to reading alt_text) was therefore showing the article title
+    instead of the actual photo credit. Explicitly setting caption/title
+    here to the real credit (e.g. "Nicholas Hunt, Getty Images") fixes
+    that regardless of which of the three fields the theme reads.
     """
     ext_by_type = {
         "image/jpeg": ".jpg", "image/jpg": ".jpg",
@@ -256,18 +268,31 @@ def upload_media(image_bytes, filename, alt_text="", content_type="image/jpeg"):
     resp.raise_for_status()
     media = resp.json()
 
+    patch_fields = {}
     if alt_text:
-        # Alt text has to be set via a follow-up PATCH -- the upload
-        # endpoint doesn't accept it directly.
+        patch_fields["alt_text"] = alt_text[:250]
+    if caption:
+        # WP's REST API takes "caption" as {"raw": ...}; the media object's
+        # "title" is a separate field that must be set the same way, and is
+        # what several themes actually render for a featured-image credit
+        # overlay -- setting only alt_text (as before) left title on its
+        # filename-derived default, which is how the article's own title
+        # ended up displayed as the photo credit.
+        patch_fields["caption"] = {"raw": caption[:250]}
+        patch_fields["title"] = {"raw": caption[:250]}
+
+    if patch_fields:
+        # These have to be set via a follow-up PATCH -- the upload endpoint
+        # doesn't accept alt_text/caption/title directly.
         try:
             _session.post(
                 f"{_api_root()}/media/{media['id']}",
-                json={"alt_text": alt_text[:250]},
+                json=patch_fields,
                 auth=AUTH,
                 timeout=30,
             )
         except requests.RequestException as e:
-            print(f"[warn] Could not set alt text for media {media['id']}: {e}")
+            print(f"[warn] Could not set alt text/caption for media {media['id']}: {e}")
 
     return {"id": media["id"], "source_url": media.get("source_url", "")}
 
