@@ -17,7 +17,7 @@ from draft import (
     draft_article, filter_rock_relevant_topics, filter_duplicate_topics,
     dedupe_topics_within_batch, verify_and_refine, research_additional_context,
 )
-from article_fetch import enrich_topic_with_full_text, download_image_bytes
+from article_fetch import enrich_topic_with_full_text, download_image_bytes, image_bytes_hash
 from wikimedia import search_commons_image, download_commons_image
 from wordpress import (
     get_recent_posts_for_dedup, get_latest_posts, get_or_create_category,
@@ -262,6 +262,11 @@ def _get_featured_media_for_topic(topic, article_title, source_item_indices=None
     topic["items"] contains every source across all of them. If not
     provided, falls back to considering every item in the topic (the
     original, pre-split behavior).
+
+    Returns (media_id, image_hash) so callers can skip re-inserting this
+    exact same photo elsewhere in the article body (see image_bytes_hash
+    in article_fetch.py) -- (None, None) if no source item had a usable
+    image or the download/upload failed.
     """
     items = topic.get("items", [])
     if source_item_indices:
@@ -275,7 +280,13 @@ def _get_featured_media_for_topic(topic, article_title, source_item_indices=None
         image_bytes, content_type = download_image_bytes(image_url)
         if not image_bytes:
             continue
-        alt_text = item.get("image_caption") or f"Credit: {item.get('source', 'source article')}"
+        # image_caption is tied to this specific image (extracted from the
+        # figcaption/alt attached to the matching <img> tag in the source
+        # article -- see _find_caption_for_image_url in article_fetch.py),
+        # so it's the same caption a reader would see on this photo inside
+        # the source article, not a generic credit line. Only fall back to
+        # a generic line when no real caption could be found at all.
+        alt_text = item.get("image_caption") or f"Photo via {item.get('source', 'source article')}"
         try:
             media = upload_media(
                 image_bytes,
@@ -289,11 +300,11 @@ def _get_featured_media_for_topic(topic, article_title, source_item_indices=None
         if media:
             print(f"[info] Using source image from {item.get('source', 'source article')} as featured image "
                   f"(caption: {alt_text!r}).")
-            return media["id"]
-    return None
+            return media["id"], image_bytes_hash(image_bytes)
+    return None, None
 
 
-def _insert_illustrative_images(article):
+def _insert_illustrative_images(article, featured_image_hash=None):
     """
     Processes article["illustrative_images"] (proposed by the drafting
     model -- see rule 4c in DRAFT_SYSTEM_PROMPT): searches Wikimedia
@@ -304,6 +315,11 @@ def _insert_illustrative_images(article):
     Silently skips any image that fails to find a match, download, or
     upload -- a missing illustrative image is not worth failing the
     whole article over.
+
+    featured_image_hash, when given, is the SHA-256 of the bytes already
+    used as the featured image (see _get_featured_media_for_topic); any
+    candidate whose downloaded bytes hash the same is skipped so the exact
+    same photo doesn't end up both as the hero image and again inline.
     """
     requests_list = article.get("illustrative_images") or []
     if not requests_list:
@@ -323,6 +339,11 @@ def _insert_illustrative_images(article):
 
         image_bytes, content_type = download_commons_image(result["url"])
         if not image_bytes:
+            continue
+
+        if featured_image_hash and image_bytes_hash(image_bytes) == featured_image_hash:
+            print(f"[info] Skipping illustrative image for query {query!r}: "
+                  "identical to the featured image, would duplicate it inline.")
             continue
 
         caption_text = req.get("caption") or result["credit"]
@@ -450,7 +471,7 @@ def _insert_video_embeds(article):
     return article
 
 
-def _insert_source_images(article):
+def _insert_source_images(article, featured_image_hash=None):
     """
     Processes article["source_images"] (proposed by the drafting model --
     see rule 4f in DRAFT_SYSTEM_PROMPT): downloads each image directly
@@ -462,6 +483,17 @@ def _insert_source_images(article):
     file). Mirrors _insert_illustrative_images()'s insertion logic, just
     sourcing the image bytes directly from the source URL instead of a
     Wikimedia Commons search.
+
+    featured_image_hash, when given, is the SHA-256 of the bytes already
+    used as the featured image (see _get_featured_media_for_topic). Since
+    "source_images" candidates are pulled from the SAME source article
+    the featured image came from, this is the main place the featured
+    photo could otherwise get re-inserted inline (e.g. when the drafting
+    model's chosen URL is a differently-sized rendition of the exact same
+    photo that the og:image-based exclusion in article_fetch.py didn't
+    catch) -- any candidate whose downloaded bytes hash the same is
+    skipped so a source article with only one photo doesn't end up
+    duplicating it as both the hero image and an inline image.
     """
     source_image_list = article.get("source_images") or []
     if not source_image_list:
@@ -477,6 +509,11 @@ def _insert_source_images(article):
         image_bytes, content_type = download_image_bytes(url)
         if not image_bytes:
             print(f"[warn] Failed to download source-body image {url}; skipping.")
+            continue
+
+        if featured_image_hash and image_bytes_hash(image_bytes) == featured_image_hash:
+            print(f"[info] Skipping source-body image {url}: "
+                  "identical to the featured image, would duplicate it inline.")
             continue
 
         caption = (img_entry.get("caption") or "").strip()
@@ -715,15 +752,15 @@ def run():
                 article["content_html"] += "\n" + links_html
 
             article["content_html"] = _strip_image_placeholders(article["content_html"])
-            featured_media_id = (
+            featured_media_id, featured_image_hash = (
                 _get_featured_media_for_topic(
                     topic, article["title"], article.get("source_item_indices")
                 )
-                if ENABLE_SOURCE_IMAGES else None
+                if ENABLE_SOURCE_IMAGES else (None, None)
             )
 
-            article = _insert_illustrative_images(article)
-            article = _insert_source_images(article)
+            article = _insert_illustrative_images(article, featured_image_hash)
+            article = _insert_source_images(article, featured_image_hash)
             _append_latest_posts_block(article, latest_posts)
             article["content_html"] = _blockify(article["content_html"], ARTICLE_FONT_SIZE_PX)
             article = _insert_video_embeds(article)
