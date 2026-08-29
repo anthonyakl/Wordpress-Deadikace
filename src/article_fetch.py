@@ -29,13 +29,80 @@ certainty) after weighing both options, not a default best practice.
 """
 
 import hashlib
+import io
 import re
 from urllib.parse import urlsplit
 
 import requests
 import trafilatura
+from PIL import Image
 
 USER_AGENT = "DeadikaceAgent/1.0 (https://www.deadikace.com)"
+
+# Hamming-distance threshold (out of 64 bits, see perceptual_hash) below
+# which two images are treated as "the same underlying photo" rather than
+# two different photos. 0 = byte-identical (after decoding); a resize,
+# re-compression, or light crop of the same source photo typically lands
+# well under 10; two genuinely different photos land well over 20 in
+# practice. Kept conservative (lower = stricter "must be very similar to
+# count as duplicate") to avoid false positives that would wrongly block a
+# real second photo from being inserted.
+IMAGE_DUPLICATE_HAMMING_THRESHOLD = 10
+
+
+def perceptual_hash(image_bytes, hash_size=8):
+    """
+    Difference-hash (dHash) of an image: robust to resizing, re-encoding,
+    and minor cropping/color adjustments -- unlike an exact byte hash
+    (only catches byte-for-byte identical files) or a URL-pattern
+    heuristic like _normalize_image_key (only catches renditions whose
+    URLs happen to follow a resize-suffix convention this code already
+    knows about). Different source sites serve "the same photo, resized"
+    through all kinds of CDN URL schemes and re-encode the bytes on the
+    way, so URL/byte-hash matching alone keeps missing real duplicates
+    whenever a new site uses a convention this code hasn't seen. Comparing
+    what the images actually LOOK like closes that gap regardless of URL
+    shape or exact encoding.
+
+    Returns a hash_size*hash_size-bit integer, or None if the bytes can't
+    be decoded as an image. Compare two hashes with hamming_distance();
+    values at or below IMAGE_DUPLICATE_HAMMING_THRESHOLD indicate the same
+    underlying photo.
+    """
+    if not image_bytes:
+        return None
+    try:
+        img = (
+            Image.open(io.BytesIO(image_bytes))
+            .convert("L")
+            .resize((hash_size + 1, hash_size), Image.LANCZOS)
+        )
+        pixels = list(img.getdata())
+    except Exception:
+        return None
+
+    bits = 0
+    for row in range(hash_size):
+        row_start = row * (hash_size + 1)
+        for col in range(hash_size):
+            bits = (bits << 1) | (1 if pixels[row_start + col] > pixels[row_start + col + 1] else 0)
+    return bits
+
+
+def hamming_distance(hash_a, hash_b):
+    """Bit difference between two perceptual_hash() values, or None if
+    either is None (e.g. one image failed to decode)."""
+    if hash_a is None or hash_b is None:
+        return None
+    return bin(hash_a ^ hash_b).count("1")
+
+
+def is_same_photo(hash_a, hash_b, threshold=IMAGE_DUPLICATE_HAMMING_THRESHOLD):
+    """True if two perceptual_hash() values are close enough to call the
+    same underlying photo (see IMAGE_DUPLICATE_HAMMING_THRESHOLD). False
+    if either hash is None (can't decode -> can't claim they're the same)."""
+    distance = hamming_distance(hash_a, hash_b)
+    return distance is not None and distance <= threshold
 
 
 def _normalize_image_key(url):
