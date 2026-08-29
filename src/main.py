@@ -17,7 +17,10 @@ from draft import (
     draft_article, filter_rock_relevant_topics, filter_duplicate_topics,
     dedupe_topics_within_batch, verify_and_refine, research_additional_context,
 )
-from article_fetch import enrich_topic_with_full_text, download_image_bytes, image_bytes_hash
+from article_fetch import (
+    enrich_topic_with_full_text, download_image_bytes, image_bytes_hash,
+    perceptual_hash, is_same_photo,
+)
 from wikimedia import search_commons_image, download_commons_image
 from wordpress import (
     get_recent_posts_for_dedup, get_latest_posts, get_or_create_category,
@@ -263,10 +266,16 @@ def _get_featured_media_for_topic(topic, article_title, source_item_indices=None
     provided, falls back to considering every item in the topic (the
     original, pre-split behavior).
 
-    Returns (media_id, image_hash) so callers can skip re-inserting this
-    exact same photo elsewhere in the article body (see image_bytes_hash
-    in article_fetch.py) -- (None, None) if no source item had a usable
-    image or the download/upload failed.
+    Returns (media_id, image_hash, image_phash) so callers can skip
+    re-inserting this same photo elsewhere in the article body: image_hash
+    is an exact byte hash (image_bytes_hash) and image_phash is a
+    perceptual/visual hash (perceptual_hash) that also catches a resized,
+    re-compressed, or lightly cropped rendition of the SAME photo pulled
+    from a different URL -- which an exact byte hash or URL-pattern check
+    alone would miss, since different source sites serve "the same photo,
+    resized" through CDN URL schemes and re-encodings this code can't
+    anticipate in advance. (None, None, None) if no source item had a
+    usable image or the download/upload failed.
     """
     items = topic.get("items", [])
     if source_item_indices:
@@ -308,11 +317,11 @@ def _get_featured_media_for_topic(topic, article_title, source_item_indices=None
         if media:
             print(f"[info] Using source image from {item.get('source', 'source article')} as featured image "
                   f"(caption: {alt_text!r}).")
-            return media["id"], image_bytes_hash(image_bytes)
-    return None, None
+            return media["id"], image_bytes_hash(image_bytes), perceptual_hash(image_bytes)
+    return None, None, None
 
 
-def _insert_illustrative_images(article, featured_image_hash=None):
+def _insert_illustrative_images(article, featured_image_hash=None, featured_image_phash=None):
     """
     Processes article["illustrative_images"] (proposed by the drafting
     model -- see rule 4c in DRAFT_SYSTEM_PROMPT): searches Wikimedia
@@ -324,10 +333,13 @@ def _insert_illustrative_images(article, featured_image_hash=None):
     upload -- a missing illustrative image is not worth failing the
     whole article over.
 
-    featured_image_hash, when given, is the SHA-256 of the bytes already
-    used as the featured image (see _get_featured_media_for_topic); any
-    candidate whose downloaded bytes hash the same is skipped so the exact
-    same photo doesn't end up both as the hero image and again inline.
+    featured_image_hash/featured_image_phash, when given, are the exact
+    byte hash and perceptual/visual hash of the bytes already used as the
+    featured image (see _get_featured_media_for_topic). A candidate is
+    skipped if EITHER matches: the exact hash catches a byte-identical
+    file, and the perceptual hash (via is_same_photo) additionally catches
+    a resized/re-compressed/lightly-cropped rendition of the same photo
+    pulled from a different URL -- which the exact hash alone would miss.
     """
     requests_list = article.get("illustrative_images") or []
     if not requests_list:
@@ -351,7 +363,12 @@ def _insert_illustrative_images(article, featured_image_hash=None):
 
         if featured_image_hash and image_bytes_hash(image_bytes) == featured_image_hash:
             print(f"[info] Skipping illustrative image for query {query!r}: "
-                  "identical to the featured image, would duplicate it inline.")
+                  "byte-identical to the featured image, would duplicate it inline.")
+            continue
+        if featured_image_phash and is_same_photo(perceptual_hash(image_bytes), featured_image_phash):
+            print(f"[info] Skipping illustrative image for query {query!r}: "
+                  "visually the same photo as the featured image (different rendition), "
+                  "would duplicate it inline.")
             continue
 
         caption_text = req.get("caption") or result["credit"]
@@ -480,7 +497,7 @@ def _insert_video_embeds(article):
     return article
 
 
-def _insert_source_images(article, featured_image_hash=None):
+def _insert_source_images(article, featured_image_hash=None, featured_image_phash=None):
     """
     Processes article["source_images"] (proposed by the drafting model --
     see rule 4f in DRAFT_SYSTEM_PROMPT): downloads each image directly
@@ -493,16 +510,19 @@ def _insert_source_images(article, featured_image_hash=None):
     sourcing the image bytes directly from the source URL instead of a
     Wikimedia Commons search.
 
-    featured_image_hash, when given, is the SHA-256 of the bytes already
-    used as the featured image (see _get_featured_media_for_topic). Since
-    "source_images" candidates are pulled from the SAME source article
-    the featured image came from, this is the main place the featured
-    photo could otherwise get re-inserted inline (e.g. when the drafting
-    model's chosen URL is a differently-sized rendition of the exact same
-    photo that the og:image-based exclusion in article_fetch.py didn't
-    catch) -- any candidate whose downloaded bytes hash the same is
-    skipped so a source article with only one photo doesn't end up
-    duplicating it as both the hero image and an inline image.
+    featured_image_hash/featured_image_phash, when given, are the exact
+    byte hash and perceptual/visual hash of the bytes already used as the
+    featured image (see _get_featured_media_for_topic). Since
+    "source_images" candidates are pulled from the SAME source article the
+    featured image came from, this is the main place the featured photo
+    could otherwise get re-inserted inline -- most often as a DIFFERENT
+    URL serving the SAME underlying photo at a different size/quality
+    (e.g. a CDN resize-parameter convention the URL-based exclusion in
+    article_fetch.py didn't happen to recognize), which produces different
+    bytes even though it's visually the same picture. The exact hash
+    check alone misses that case; the perceptual hash (is_same_photo)
+    catches it by comparing what the images actually look like, not their
+    URLs or exact encoding. A candidate is skipped if either check fires.
     """
     source_image_list = article.get("source_images") or []
     if not source_image_list:
@@ -522,7 +542,12 @@ def _insert_source_images(article, featured_image_hash=None):
 
         if featured_image_hash and image_bytes_hash(image_bytes) == featured_image_hash:
             print(f"[info] Skipping source-body image {url}: "
-                  "identical to the featured image, would duplicate it inline.")
+                  "byte-identical to the featured image, would duplicate it inline.")
+            continue
+        if featured_image_phash and is_same_photo(perceptual_hash(image_bytes), featured_image_phash):
+            print(f"[info] Skipping source-body image {url}: "
+                  "visually the same photo as the featured image (different rendition), "
+                  "would duplicate it inline.")
             continue
 
         caption = (img_entry.get("caption") or "").strip()
@@ -763,15 +788,15 @@ def run():
                 article["content_html"] += "\n" + links_html
 
             article["content_html"] = _strip_image_placeholders(article["content_html"])
-            featured_media_id, featured_image_hash = (
+            featured_media_id, featured_image_hash, featured_image_phash = (
                 _get_featured_media_for_topic(
                     topic, article["title"], article.get("source_item_indices")
                 )
-                if ENABLE_SOURCE_IMAGES else (None, None)
+                if ENABLE_SOURCE_IMAGES else (None, None, None)
             )
 
-            article = _insert_illustrative_images(article, featured_image_hash)
-            article = _insert_source_images(article, featured_image_hash)
+            article = _insert_illustrative_images(article, featured_image_hash, featured_image_phash)
+            article = _insert_source_images(article, featured_image_hash, featured_image_phash)
             _append_latest_posts_block(article, latest_posts)
             article["content_html"] = _blockify(article["content_html"], ARTICLE_FONT_SIZE_PX)
             article = _insert_video_embeds(article)
