@@ -146,6 +146,16 @@ LATEST_POSTS_COUNT = _env_int("LATEST_POSTS_COUNT", 5)
 # editor. Adjust if it looks too big/small on your theme.
 ARTICLE_FONT_SIZE_PX = _env_int("ARTICLE_FONT_SIZE_PX", 22)
 
+# --- Article body media (images/videos) sizing ---
+# Applied as inline styles to every image and video embed inserted INTO the
+# article body (illustrative Wikimedia images, source-body images, YouTube
+# embeds) so they render centered and proportionate to the text column
+# regardless of the theme's own CSS or each media item's original
+# dimensions -- WITHOUT depending on any theme-specific class. Deliberately
+# does NOT apply to the featured/hero image, which WordPress renders via
+# its own post-thumbnail template, entirely separate from content_html.
+BODY_MEDIA_MAX_WIDTH_PX = _env_int("BODY_MEDIA_MAX_WIDTH_PX", 480)
+
 # --- Competitor RSS feeds ---
 # These are used ONLY to detect trending topics (titles/summaries/links).
 # We never scrape or reproduce full competitor article text.
@@ -189,4 +199,3 @@ context, not just a rehash of the news.
 YOAST_TITLE_FIELD = "_yoast_wpseo_title"
 YOAST_META_DESC_FIELD = "_yoast_wpseo_metadesc"
 YOAST_FOCUS_KEYWORD_FIELD = "_yoast_wpseo_focuskw"
-
