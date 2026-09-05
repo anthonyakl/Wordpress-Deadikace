@@ -10,7 +10,7 @@ from difflib import SequenceMatcher
 
 from config import (
     MAX_ARTICLES_PER_RUN, POST_STATUS, TARGET_CATEGORY, LATEST_POSTS_COUNT,
-    ARTICLE_FONT_SIZE_PX, ENABLE_SOURCE_IMAGES,
+    ARTICLE_FONT_SIZE_PX, ENABLE_SOURCE_IMAGES, BODY_MEDIA_MAX_WIDTH_PX,
 )
 from discover import get_trending_topics
 from draft import (
@@ -248,6 +248,28 @@ def _strip_image_placeholders(content_html):
     return content_html
 
 
+# Shared inline styling for every image/video inserted INTO the article
+# body (illustrative Wikimedia images, source-body images, YouTube embeds)
+# -- deliberately NOT applied to the featured/hero image, which WordPress
+# renders separately via its own post-thumbnail template and never touches
+# this content_html. Centers the media, caps its width to a size that
+# feels proportionate to the text column rather than spanning it edge to
+# edge, adds breathing room above/below so it doesn't feel cramped against
+# paragraphs, and keeps captions aligned under the media -- all via inline
+# styles so the result is consistent across articles regardless of the
+# active theme's own CSS (or lack of specific handling for it), and
+# regardless of each image/video's original dimensions. width:100% together
+# with max-width and height:auto lets it shrink further on narrow (mobile)
+# viewports without ever exceeding BODY_MEDIA_MAX_WIDTH_PX, and never
+# distorts the media since no fixed height is set on the media itself.
+_BODY_MEDIA_FIGURE_STYLE = (
+    f"display:block;box-sizing:border-box;max-width:{BODY_MEDIA_MAX_WIDTH_PX}px;"
+    "width:100%;margin:32px auto;text-align:center;"
+)
+_BODY_MEDIA_IMG_STYLE = "display:block;max-width:100%;height:auto;margin:0 auto;"
+_BODY_MEDIA_CAPTION_STYLE = "text-align:center;"
+
+
 def _get_featured_media_for_topic(topic, article_title, source_item_indices=None):
     """
     Downloads a source article's own preview image (og:image) and
@@ -387,9 +409,9 @@ def _insert_illustrative_images(article, featured_image_hash=None, featured_imag
             continue
 
         figure_html = (
-            f'<figure class="wp-block-image size-large">'
-            f'<img src="{media["source_url"]}" alt="{caption_text}" />'
-            f'<figcaption>{caption_text} ({result["credit"]})</figcaption>'
+            f'<figure class="wp-block-image size-large" style="{_BODY_MEDIA_FIGURE_STYLE}">'
+            f'<img src="{media["source_url"]}" alt="{caption_text}" style="{_BODY_MEDIA_IMG_STYLE}" />'
+            f'<figcaption style="{_BODY_MEDIA_CAPTION_STYLE}">{caption_text} ({result["credit"]})</figcaption>'
             f'</figure>'
         )
 
@@ -456,16 +478,23 @@ def _insert_video_embeds(article):
             continue
         video_id = video_id_match.group(1)
 
+        # Outer wrapper matches the same centered, width-capped, spaced
+        # treatment as body images (_BODY_MEDIA_FIGURE_STYLE) so video
+        # embeds feel like part of the same consistent layout rather than
+        # a separately-styled element. The inner div keeps the classic
+        # padding-bottom aspect-ratio hack (16:9) so the video scales
+        # responsively without distortion at any width up to the outer
+        # wrapper's cap, on both desktop and mobile.
         iframe_html = (
-            '<figure style="position:relative;padding-bottom:56.25%;height:0;'
-            'overflow:hidden;max-width:100%;margin:20px 0;">'
+            f'<div style="{_BODY_MEDIA_FIGURE_STYLE}">'
+            '<div style="position:relative;padding-bottom:56.25%;height:0;overflow:hidden;">'
             f'<iframe src="https://www.youtube.com/embed/{video_id}" '
             'title="YouTube video player" '
             'style="position:absolute;top:0;left:0;width:100%;height:100%;" '
             'frameborder="0" allow="accelerometer; autoplay; clipboard-write; '
             'encrypted-media; gyroscope; picture-in-picture; web-share" '
             'referrerpolicy="strict-origin-when-cross-origin" allowfullscreen>'
-            '</iframe></figure>'
+            '</iframe></div></div>'
         )
         embed_html = f'<!-- wp:html -->\n{iframe_html}\n<!-- /wp:html -->'
 
@@ -566,9 +595,12 @@ def _insert_source_images(article, featured_image_hash=None, featured_image_phas
         if not media:
             continue
 
-        figure_html = f'<figure class="wp-block-image size-large"><img src="{media["source_url"]}" alt="{caption}"/>'
+        figure_html = (
+            f'<figure class="wp-block-image size-large" style="{_BODY_MEDIA_FIGURE_STYLE}">'
+            f'<img src="{media["source_url"]}" alt="{caption}" style="{_BODY_MEDIA_IMG_STYLE}"/>'
+        )
         if caption:
-            figure_html += f'<figcaption>{caption}</figcaption>'
+            figure_html += f'<figcaption style="{_BODY_MEDIA_CAPTION_STYLE}">{caption}</figcaption>'
         figure_html += '</figure>'
 
         heading = (img_entry.get("placement_after_heading") or "").strip()
