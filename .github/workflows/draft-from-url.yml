@@ -1,0 +1,42 @@
+name: Deadikace Draft from Source URL
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_url:
+        description: "Source article URL to research and turn into a WordPress draft"
+        required: true
+        type: string
+
+jobs:
+  draft-from-url:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Generate WordPress draft from requested URL
+        working-directory: src
+        env:
+          SOURCE_URL: ${{ inputs.source_url }}
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_API_BASE_URL: ${{ secrets.WP_API_BASE_URL }}
+          WP_PROXY_TOKEN: ${{ secrets.WP_PROXY_TOKEN }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          TARGET_CATEGORY: ${{ secrets.TARGET_CATEGORY }}
+          PRIORITY_KEYWORDS: ${{ secrets.PRIORITY_KEYWORDS }}
+          POST_STATUS: ${{ secrets.POST_STATUS }}
+        run: python manual_url.py

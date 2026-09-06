@@ -297,19 +297,23 @@ def upload_media(image_bytes, filename, alt_text="", content_type="image/jpeg", 
     return {"id": media["id"], "source_url": media.get("source_url", "")}
 
 
-def create_post(article, category_id=None, featured_media_id=None):
+def create_post(article, category_id=None, featured_media_id=None, post_status=None):
     """
     article: dict with keys:
       title, content_html, excerpt, tags (list[str]),
       seo_title, meta_description, focus_keyword
     """
     tag_ids = [get_or_create_tag(t) for t in article.get("tags", [])]
+    effective_status = post_status or POST_STATUS
 
     payload = {
         "title": article["title"],
         "content": article["content_html"],
         "excerpt": article.get("excerpt", ""),
-        "status": POST_STATUS,  # "publish" or "draft"
+        # Callers such as the manual-URL workflow may force a safer status.
+        # Omitting post_status preserves the scheduled agent's exact existing
+        # behavior and continues to use the configured POST_STATUS value.
+        "status": effective_status,  # "publish" or "draft"
         "tags": tag_ids,
         "meta": {
             YOAST_TITLE_FIELD: article.get("seo_title", article["title"]),
