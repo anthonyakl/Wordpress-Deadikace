@@ -148,7 +148,7 @@ def get_recent_posts_for_dedup(per_page=50):
         f"{_api_root()}/posts",
         params={
             "per_page": per_page,
-            "_fields": "title,excerpt,link",
+            "_fields": "id,status,author,title,excerpt,link",
             # Include drafts/pending/scheduled posts in the dedup pool, not
             # just published ones -- a topic already drafted (but not yet
             # published) in an earlier run must still be caught as a
@@ -167,6 +167,9 @@ def get_recent_posts_for_dedup(per_page=50):
         results.append({
             "title": title,
             "excerpt": excerpt,
+            "id": p.get("id"),
+            "status": p.get("status", ""),
+            "author": p.get("author"),
             # Useful to identify the exact match in manual-run logs. Existing
             # scheduled dedupe behavior still consumes only title/excerpt.
             "link": p.get("link", ""),

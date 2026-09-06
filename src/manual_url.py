@@ -176,7 +176,23 @@ def _find_clear_duplicate(candidate_title, existing_posts):
 
 def _duplicate_message(prefix, duplicate):
     location = duplicate.get("link") or "existing WordPress post"
-    return f"{prefix}: {duplicate.get('title', 'Untitled')} ({location})"
+    details = []
+    if duplicate.get("id") is not None:
+        details.append(f"ID {duplicate['id']}")
+    if duplicate.get("status"):
+        details.append(f"status={duplicate['status']}")
+    if duplicate.get("author") is not None:
+        details.append(f"author ID {duplicate['author']}")
+    details.append(location)
+    detail_text = ", ".join(details)
+    return f"{prefix}: {duplicate.get('title', 'Untitled')} ({detail_text})"
+
+
+def _admin_edit_path(duplicate):
+    post_id = duplicate.get("id")
+    if post_id is None:
+        return None
+    return f"/wp-admin/post.php?post={post_id}&action=edit"
 
 
 def _write_job_summary(message):
@@ -187,9 +203,12 @@ def _write_job_summary(message):
         summary.write(f"## Deadikace manual URL result\n\n{message}\n")
 
 
-def run(source_url):
+def run(source_url, force_create=False):
     source_url = _validate_source_url(source_url)
     print(f"[manual] Requested source URL: {source_url}")
+    if force_create:
+        print("[manual] Force-create is enabled; matching existing posts will be "
+              "reported but will not block draft creation.")
 
     print("Checking connectivity to WordPress...")
     ok, error = check_connectivity()
@@ -206,13 +225,20 @@ def run(source_url):
     existing_posts = get_recent_posts_for_dedup(per_page=100)
     duplicate = _find_clear_duplicate(headline, existing_posts)
     if duplicate:
-        message = _duplicate_message(
-            f"No draft was created because the requested story clearly matches '{headline}'",
-            duplicate,
-        )
-        print(f"[manual] {message}")
-        _write_job_summary(message)
-        return "skipped"
+        match_message = _duplicate_message("Matching WordPress post found", duplicate)
+        print(f"[manual] {match_message}")
+        edit_path = _admin_edit_path(duplicate)
+        if edit_path:
+            print(f"[manual] WordPress admin edit path: {edit_path}")
+        if force_create:
+            print("[manual] Force-create is enabled; continuing with a new draft.")
+        else:
+            message = (
+                "No draft was created. Re-run with 'Create a new draft even if a matching "
+                "WordPress post already exists' enabled if you intentionally want another copy."
+            )
+            _write_job_summary(f"{match_message}\n\n{message}")
+            raise RuntimeError(message)
 
     print("Researching additional factual context...")
     research_additional_context(topic)
@@ -229,7 +255,7 @@ def run(source_url):
     for article in articles:
         article_title = article.get("title", headline)
         duplicate = _find_clear_duplicate(article_title, existing_posts)
-        if duplicate:
+        if duplicate and not force_create:
             print(f"[manual] {_duplicate_message('Skipped generated duplicate', duplicate)}")
             continue
 
@@ -242,7 +268,7 @@ def run(source_url):
 
         article_title = article.get("title", headline)
         duplicate = _find_clear_duplicate(article_title, existing_posts)
-        if duplicate:
+        if duplicate and not force_create:
             print(f"[manual] {_duplicate_message('Skipped refined duplicate', duplicate)}")
             continue
 
@@ -293,7 +319,10 @@ def run(source_url):
 
 if __name__ == "__main__":
     try:
-        run(os.environ.get("SOURCE_URL", ""))
+        force_create = os.environ.get("FORCE_CREATE", "").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+        run(os.environ.get("SOURCE_URL", ""), force_create=force_create)
     except (ValueError, RuntimeError, KeyError) as exc:
         print(f"[fatal] {exc}")
         sys.exit(1)

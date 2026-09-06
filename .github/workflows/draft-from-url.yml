@@ -7,6 +7,11 @@ on:
         description: "Source article URL to research and turn into a WordPress draft"
         required: true
         type: string
+      force_create:
+        description: "Create a new draft even if a matching WordPress post already exists"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   draft-from-url:
@@ -27,6 +32,7 @@ jobs:
         working-directory: src
         env:
           SOURCE_URL: ${{ inputs.source_url }}
+          FORCE_CREATE: ${{ inputs.force_create }}
           WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
           WP_API_BASE_URL: ${{ secrets.WP_API_BASE_URL }}
           WP_PROXY_TOKEN: ${{ secrets.WP_PROXY_TOKEN }}
