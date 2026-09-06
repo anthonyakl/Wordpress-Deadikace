@@ -10,6 +10,7 @@ and WordPress helpers.
 import hashlib
 import os
 import sys
+from difflib import SequenceMatcher
 from urllib.parse import urlparse
 
 import trafilatura
@@ -26,17 +27,21 @@ from config import (
     LATEST_POSTS_COUNT,
     TARGET_CATEGORY,
 )
-from draft import draft_article, filter_duplicate_topics, research_additional_context, verify_and_refine
+from draft import (
+    draft_article,
+    research_additional_context,
+    verify_and_refine,
+)
 from main import (
     _append_latest_posts_block,
-    _article_already_covered,
     _blockify,
     _get_featured_media_for_topic,
     _insert_illustrative_images,
     _insert_source_images,
     _insert_video_embeds,
+    _normalize_story_text,
+    _story_tokens,
     _strip_image_placeholders,
-    _topic_already_covered,
 )
 from wordpress import (
     check_connectivity,
@@ -117,6 +122,71 @@ def _build_topic(source_url):
     }
 
 
+def _find_clear_duplicate(candidate_title, existing_posts):
+    """Return the matching post only when headlines clearly describe one event.
+
+    The scheduled pipeline intentionally uses an aggressive duplicate policy.
+    That is inappropriate for an explicit manual request: comparing hundreds
+    of words of source/background text can mistake two different stories about
+    the same artist for one story. The manual path therefore compares the
+    event-bearing headline against existing titles/excerpts with deliberately
+    high thresholds. This still catches exact and strongly reworded duplicates
+    without treating a shared artist, band, instrument, or career detail as a
+    duplicate by itself.
+    """
+    candidate = _normalize_story_text(candidate_title)
+    candidate_tokens = _story_tokens(candidate_title)
+    if not candidate or not candidate_tokens:
+        return None
+
+    for post in existing_posts:
+        post_title = post.get("title", "")
+        normalized_post_title = _normalize_story_text(post_title)
+        if not normalized_post_title:
+            continue
+
+        if candidate == normalized_post_title:
+            return post
+
+        title_sequence = SequenceMatcher(None, candidate, normalized_post_title).ratio()
+        post_title_tokens = _story_tokens(post_title)
+        title_overlap = len(candidate_tokens & post_title_tokens)
+        title_smaller = min(len(candidate_tokens), len(post_title_tokens))
+        title_union = len(candidate_tokens | post_title_tokens)
+        title_containment = title_overlap / title_smaller if title_smaller else 0
+        title_jaccard = title_overlap / title_union if title_union else 0
+
+        if title_sequence >= 0.86:
+            return post
+        if title_overlap >= 4 and title_containment >= 0.75 and title_jaccard >= 0.50:
+            return post
+
+        # A differently-worded existing headline may omit a key detail that is
+        # present in its excerpt. Require nearly the whole requested headline
+        # to appear across the existing title+excerpt before calling it the
+        # same story; a couple of shared artist/background terms cannot pass.
+        post_story_tokens = _story_tokens(f"{post_title} {post.get('excerpt', '')}")
+        story_overlap = len(candidate_tokens & post_story_tokens)
+        candidate_containment = story_overlap / len(candidate_tokens)
+        if story_overlap >= 5 and candidate_containment >= 0.75:
+            return post
+
+    return None
+
+
+def _duplicate_message(prefix, duplicate):
+    location = duplicate.get("link") or "existing WordPress post"
+    return f"{prefix}: {duplicate.get('title', 'Untitled')} ({location})"
+
+
+def _write_job_summary(message):
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path:
+        return
+    with open(summary_path, "a", encoding="utf-8") as summary:
+        summary.write(f"## Deadikace manual URL result\n\n{message}\n")
+
+
 def run(source_url):
     source_url = _validate_source_url(source_url)
     print(f"[manual] Requested source URL: {source_url}")
@@ -131,17 +201,17 @@ def run(source_url):
     headline = topic["items"][0]["title"]
     print(f"[manual] Source article title: {headline}")
 
-    print("Fetching existing published, draft, pending, and scheduled posts for duplicate checking...")
+    print("Fetching existing published, draft, pending, and scheduled posts "
+          "for duplicate checking...")
     existing_posts = get_recent_posts_for_dedup(per_page=100)
-    if _topic_already_covered(topic, existing_posts):
-        print(f"[manual] Skipped as a duplicate of an existing WordPress story: {headline}")
-        return "skipped"
-
-    # Keep the semantic duplicate protection used by the scheduled pipeline,
-    # but intentionally do not invoke relevance, ranking, source-count, or RSS
-    # discovery filters for this explicit user request.
-    if not filter_duplicate_topics([topic], existing_posts):
-        print(f"[manual] Skipped as a duplicate of an existing WordPress story: {headline}")
+    duplicate = _find_clear_duplicate(headline, existing_posts)
+    if duplicate:
+        message = _duplicate_message(
+            f"No draft was created because the requested story clearly matches '{headline}'",
+            duplicate,
+        )
+        print(f"[manual] {message}")
+        _write_job_summary(message)
         return "skipped"
 
     print("Researching additional factual context...")
@@ -158,19 +228,22 @@ def run(source_url):
 
     for article in articles:
         article_title = article.get("title", headline)
-        if _article_already_covered(article, existing_posts):
-            print(f"[manual] Skipped draft as a duplicate of an existing WordPress story: {article_title}")
+        duplicate = _find_clear_duplicate(article_title, existing_posts)
+        if duplicate:
+            print(f"[manual] {_duplicate_message('Skipped generated duplicate', duplicate)}")
             continue
 
         print(f"Fact-checking and refining: {article_title}")
         try:
             article = verify_and_refine(article, topic)
         except Exception as exc:
-            print(f"[warn] Fact-check pass raised an unexpected error ({exc}); using the original draft unchanged.")
+            print(f"[warn] Fact-check pass raised an unexpected error ({exc}); "
+                  "using the original draft unchanged.")
 
         article_title = article.get("title", headline)
-        if _article_already_covered(article, existing_posts):
-            print(f"[manual] Skipped refined draft as a duplicate of an existing WordPress story: {article_title}")
+        duplicate = _find_clear_duplicate(article_title, existing_posts)
+        if duplicate:
+            print(f"[manual] {_duplicate_message('Skipped refined duplicate', duplicate)}")
             continue
 
         related = search_related_posts(article.get("focus_keyword", headline))
@@ -207,10 +280,14 @@ def run(source_url):
         })
 
     if not created_count:
-        print("[manual] No draft was created because every generated article matched an existing story.")
+        message = "No draft was created because every generated article clearly matched an existing story."
+        print(f"[manual] {message}")
+        _write_job_summary(message)
         return "skipped"
 
-    print(f"[manual] Done. Created {created_count} WordPress draft(s) from: {source_url}")
+    message = f"Created {created_count} WordPress draft(s) from {source_url}."
+    print(f"[manual] Done. {message}")
+    _write_job_summary(message)
     return "created"
 
 

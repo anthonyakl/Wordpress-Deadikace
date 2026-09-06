@@ -164,7 +164,13 @@ def get_recent_posts_for_dedup(per_page=50):
         title = p["title"]["rendered"]
         excerpt = re.sub(r"<[^>]+>", " ", p.get("excerpt", {}).get("rendered", ""))
         excerpt = " ".join(excerpt.split())[:200]
-        results.append({"title": title, "excerpt": excerpt})
+        results.append({
+            "title": title,
+            "excerpt": excerpt,
+            # Useful to identify the exact match in manual-run logs. Existing
+            # scheduled dedupe behavior still consumes only title/excerpt.
+            "link": p.get("link", ""),
+        })
     return results
 
 
