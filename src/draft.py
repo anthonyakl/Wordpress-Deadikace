@@ -22,11 +22,12 @@ import base64
 import io
 import json
 import re
+import time
 
 from config import (
     LLM_PROVIDER,
     ANTHROPIC_API_KEY, CLAUDE_MODEL,
-    GEMINI_API_KEY, GEMINI_MODEL,
+    GEMINI_API_KEY, GEMINI_MODEL, GEMINI_FALLBACK_MODEL,
     SITE_VOICE_GUIDELINES,
     ENABLE_DEEP_RESEARCH, RESEARCH_MAX_SEARCHES,
     ENABLE_IMAGE_VISION_CHECK,
@@ -530,7 +531,7 @@ def _call_gemini(system_prompt, user_prompt, max_tokens):
 
     client = genai.Client(api_key=GEMINI_API_KEY)
     response = client.models.generate_content(
-        model=GEMINI_MODEL,
+        model=_ACTIVE_GEMINI_MODEL,
         contents=user_prompt,
         config=types.GenerateContentConfig(
             system_instruction=system_prompt,
@@ -539,7 +540,7 @@ def _call_gemini(system_prompt, user_prompt, max_tokens):
     )
     return response.text
 
-def _call_llm(system_prompt, user_prompt, max_tokens=4000):
+def _call_llm_once(system_prompt, user_prompt, max_tokens=4000):
     if LLM_PROVIDER == "anthropic":
         if not ANTHROPIC_API_KEY:
             raise ValueError("LLM_PROVIDER is 'anthropic' but ANTHROPIC_API_KEY is not set.")
@@ -591,7 +592,7 @@ def _call_gemini_with_search(system_prompt, user_prompt, max_tokens, max_searche
 
     client = genai.Client(api_key=GEMINI_API_KEY)
     response = client.models.generate_content(
-        model=GEMINI_MODEL,
+        model=_ACTIVE_GEMINI_MODEL,
         contents=user_prompt,
         config=types.GenerateContentConfig(
             system_instruction=system_prompt,
@@ -600,7 +601,7 @@ def _call_gemini_with_search(system_prompt, user_prompt, max_tokens, max_searche
     )
     return (response.text or "").strip()
 
-def _call_llm_with_search(system_prompt, user_prompt, max_tokens, max_searches):
+def _call_llm_with_search_once(system_prompt, user_prompt, max_tokens, max_searches):
     if LLM_PROVIDER == "anthropic":
         if not ANTHROPIC_API_KEY:
             raise ValueError("LLM_PROVIDER is 'anthropic' but ANTHROPIC_API_KEY is not set.")
@@ -611,6 +612,50 @@ def _call_llm_with_search(system_prompt, user_prompt, max_tokens, max_searches):
         return _call_gemini_with_search(system_prompt, user_prompt, max_tokens, max_searches)
     else:
         raise ValueError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER!r} (expected 'anthropic' or 'gemini')")
+
+_ACTIVE_GEMINI_MODEL = GEMINI_MODEL
+
+_TRANSIENT_MARKERS = (
+    "503", "UNAVAILABLE", "overloaded", "high demand", "500", "INTERNAL",
+    "529", "429", "RESOURCE_EXHAUSTED", "timed out", "timeout", "Connection",
+)
+_RETRY_DELAYS = (15, 45, 90)  # seconds; ~2.5 minutes total before giving up
+
+
+def _with_retries(fn, *args):
+    """
+    Calls fn(*args), retrying temporary provider errors (503 "high demand",
+    500, 429 rate limits, timeouts) with growing pauses. For Gemini, after
+    two failed attempts it also switches to GEMINI_FALLBACK_MODEL, because a
+    503 is usually specific to one model. Non-temporary errors (bad key, bad
+    request) are raised immediately.
+    """
+    global _ACTIVE_GEMINI_MODEL
+    for attempt in range(len(_RETRY_DELAYS) + 1):
+        try:
+            return fn(*args)
+        except Exception as e:
+            text = str(e)
+            transient = any(marker in text for marker in _TRANSIENT_MARKERS)
+            if not transient or attempt == len(_RETRY_DELAYS):
+                raise
+            delay = _RETRY_DELAYS[attempt]
+            if (LLM_PROVIDER == "gemini" and attempt >= 1
+                    and GEMINI_FALLBACK_MODEL and _ACTIVE_GEMINI_MODEL != GEMINI_FALLBACK_MODEL):
+                print(f"[warn] {_ACTIVE_GEMINI_MODEL} keeps failing; switching to {GEMINI_FALLBACK_MODEL}.")
+                _ACTIVE_GEMINI_MODEL = GEMINI_FALLBACK_MODEL
+            print(f"[warn] LLM call failed with a temporary error ({text[:120]!r}); "
+                  f"retrying in {delay}s (attempt {attempt + 2} of {len(_RETRY_DELAYS) + 1})...")
+            time.sleep(delay)
+
+
+def _call_llm(system_prompt, user_prompt, max_tokens=4000):
+    return _with_retries(_call_llm_once, system_prompt, user_prompt, max_tokens)
+
+
+def _call_llm_with_search(system_prompt, user_prompt, max_tokens, max_searches):
+    return _with_retries(_call_llm_with_search_once, system_prompt, user_prompt, max_tokens, max_searches)
+
 
 def research_additional_context(topic):
     """
@@ -942,7 +987,7 @@ def verify_image_matches(image_bytes, description):
             from google.genai import types
             client = genai.Client(api_key=GEMINI_API_KEY)
             response = client.models.generate_content(
-                model=GEMINI_MODEL,
+                model=_ACTIVE_GEMINI_MODEL,
                 contents=[types.Part.from_bytes(data=jpeg, mime_type="image/jpeg"), user_text],
                 config=types.GenerateContentConfig(
                     system_instruction=IMAGE_CHECK_SYSTEM_PROMPT,

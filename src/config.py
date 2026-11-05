@@ -61,6 +61,10 @@ GEMINI_API_KEY = _env("GEMINI_API_KEY")
 # Google retires a specific dated model version. Override via the
 # GEMINI_MODEL secret if you want a specific model instead.
 GEMINI_MODEL = _env("GEMINI_MODEL", "gemini-flash-lite-latest")
+# Used automatically if GEMINI_MODEL keeps answering "503 high demand" /
+# "overloaded" after several retries (that error is per-model, so a different
+# model usually works straight away).
+GEMINI_FALLBACK_MODEL = _env("GEMINI_FALLBACK_MODEL", "gemini-flash-latest")
 
 # --- Behavior ---
 # "publish" = goes live immediately. "draft" = saved in WP for you to review first.
