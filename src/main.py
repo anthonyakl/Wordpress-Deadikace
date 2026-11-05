@@ -14,6 +14,7 @@ from config import (
     MAX_ARTICLES_PER_RUN, POST_STATUS, TARGET_CATEGORY, LATEST_POSTS_COUNT,
     ARTICLE_FONT_SIZE_PX, ENABLE_SOURCE_IMAGES, BODY_MEDIA_MAX_WIDTH_PX,
     MAX_VIDEOS_PER_ARTICLE, PREFERRED_GENRE_BONUS, DEPRIORITIZED_GENRE_PENALTY,
+    MAX_BONUS_ARTICLES_PER_RUN, STRONG_STORY_SCORE, MAX_ARTICLES_PER_DAY,
 )
 from discover import get_trending_topics
 from draft import (
@@ -29,7 +30,7 @@ from wikimedia import search_commons_image, download_commons_image
 from wordpress import (
     get_recent_posts_for_dedup, get_latest_posts, get_or_create_category,
     create_post, search_related_posts, check_connectivity, upload_media,
-    get_category_ids_for_kind,
+    get_category_ids_for_kind, count_posts_created_today,
 )
 
 # Core Deadikace artists/bands. A matching recent topic receives a strong
@@ -824,6 +825,22 @@ def _apply_genre_priority(topics):
     return topics
 
 
+def _may_publish_another(published_count, topic, daily_remaining):
+    """
+    Slot rule: the best MAX_ARTICLES_PER_RUN stories of a run always get a
+    slot; up to MAX_BONUS_ARTICLES_PER_RUN more only if the story's score
+    reaches STRONG_STORY_SCORE (i.e. it's genuinely big news); and never more
+    than the daily ceiling allows.
+    """
+    if published_count >= daily_remaining:
+        return False
+    if published_count < MAX_ARTICLES_PER_RUN:
+        return True
+    if published_count < MAX_ARTICLES_PER_RUN + MAX_BONUS_ARTICLES_PER_RUN:
+        return float(topic.get("score", 0)) >= STRONG_STORY_SCORE
+    return False
+
+
 def run():
     print("Checking connectivity to WordPress...")
     ok, error = check_connectivity()
@@ -838,6 +855,14 @@ def run():
               "this message; if it keeps failing across multiple scheduled runs, "
               "contact your host's support with this specific symptom.")
         sys.exit(1)
+
+    posts_today = count_posts_created_today()
+    daily_remaining = max(0, MAX_ARTICLES_PER_DAY - posts_today)
+    print(f"[info] {posts_today} post(s) created today (UTC); daily ceiling is "
+          f"{MAX_ARTICLES_PER_DAY}, so {daily_remaining} more allowed.")
+    if daily_remaining == 0:
+        print("Daily article ceiling reached. Exiting without drafting anything.")
+        return
 
     print("Fetching trending topics from competitor feeds...")
     topics = get_trending_topics()
@@ -893,7 +918,9 @@ def run():
 
     published_count = 0
     for topic in topics:
-        if published_count >= MAX_ARTICLES_PER_RUN:
+        # Topics are sorted best-first, so once a topic is too weak for a
+        # bonus slot every later one is too.
+        if not _may_publish_another(published_count, topic, daily_remaining):
             break
 
         headline = topic["items"][0]["title"]
@@ -935,7 +962,7 @@ def run():
                   f"(distinct newsworthy stories detected within one topic cluster).")
 
         for article in articles:
-            if published_count >= MAX_ARTICLES_PER_RUN:
+            if not _may_publish_another(published_count, topic, daily_remaining):
                 break
 
             # Final in-memory duplicate guard before doing any media upload or

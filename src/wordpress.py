@@ -4,6 +4,7 @@ Docs: https://developer.wordpress.org/rest-api/
 """
 
 import re
+from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
@@ -183,6 +184,29 @@ def get_recent_posts_for_dedup(per_page=50):
             "link": p.get("link", ""),
         })
     return results
+
+
+def count_posts_created_today():
+    """Number of posts (any of publish/future/draft/pending) created since
+    00:00 UTC today. Returns 0 if the count can't be fetched, so a hiccup
+    never blocks publishing (the per-run limits still apply)."""
+    start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    try:
+        resp = _session.get(
+            f"{_api_root()}/posts",
+            params={
+                "per_page": 100,
+                "after": start.strftime("%Y-%m-%dT%H:%M:%S"),
+                "_fields": "id",
+                "status": "publish,future,draft,pending",
+            },
+            auth=AUTH, timeout=REQUEST_TIMEOUT,
+        )
+        resp.raise_for_status()
+        return len(resp.json())
+    except Exception as e:
+        print(f"[warn] Could not count today's posts ({e}); continuing without the daily cap.")
+        return 0
 
 
 def get_latest_posts(limit=5):

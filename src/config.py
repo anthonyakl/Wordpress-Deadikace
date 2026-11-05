@@ -72,7 +72,20 @@ GEMINI_FALLBACK_MODEL = _env("GEMINI_FALLBACK_MODEL", "gemini-flash-latest")
 POST_STATUS = _env("POST_STATUS", "publish")  # "publish" or "draft"
 
 # Max number of new articles to generate per run
-MAX_ARTICLES_PER_RUN = _env_int("MAX_ARTICLES_PER_RUN", 2)
+MAX_ARTICLES_PER_RUN = _env_int("MAX_ARTICLES_PER_RUN", 1)
+
+# Extra articles beyond MAX_ARTICLES_PER_RUN are published in the same run
+# ONLY for strong stories: a topic's ranking score (outlet coverage + freshness
+# + core-artist / major-news / genre bonuses) must be at least
+# STRONG_STORY_SCORE. Roughly: a fresh story about one of your core artists,
+# or a fresh story covered by 4-5 outlets, clears 90; an ordinary one-outlet
+# story does not. Lower the number for more articles, raise it for fewer.
+MAX_BONUS_ARTICLES_PER_RUN = _env_int("MAX_BONUS_ARTICLES_PER_RUN", 2)
+STRONG_STORY_SCORE = _env_int("STRONG_STORY_SCORE", 90)
+
+# Hard daily ceiling across all runs (counts every post -- published, draft,
+# pending or scheduled -- created since 00:00 UTC, manual drafts included).
+MAX_ARTICLES_PER_DAY = _env_int("MAX_ARTICLES_PER_DAY", 8)
 
 # Whether to use the source article's own preview image (og:image) as the
 # featured image, re-hosted on Deadikace. See README.md Step 8 for the
