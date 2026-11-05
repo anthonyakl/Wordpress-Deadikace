@@ -31,6 +31,7 @@ certainty) after weighing both options, not a default best practice.
 import hashlib
 import io
 import re
+from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
 import requests
@@ -461,7 +462,7 @@ def enrich_topic_with_full_text(topic, max_sources=4):
                 text = None
             item["full_text"] = text.strip()[:5000] if text else None
             item["image_url"], item["image_caption"] = fetch_source_image_url(item["link"], html=html)
-            item["video_embeds"] = extract_video_embeds(html)
+            item["video_embeds"] = extract_video_embeds(html, article_title=item.get("title"))
             item["body_images"] = extract_body_images(html, exclude_url_fragment=item["image_url"])
         else:
             item["full_text"] = None
@@ -478,56 +479,216 @@ def _extract_article_body_html(html):
     Best-effort isolation of just the article body HTML, so video/heading
     extraction doesn't wander into sidebars, "related articles", or
     "you might also like" widgets elsewhere on the page. Those sections
-often contain embedded videos for a COMPLETELY different story (this
-    is exactly how an unrelated video ended up attached to an article
-    about a different artist entirely) -- scoping to <article> avoids
-    picking those up. Falls back to the full page if no <article> tag is
-    found, since that's still better than extracting nothing.
+    often contain embedded videos for a COMPLETELY different story.
+    When a page has several <article> elements (the main story plus
+    related-story cards), the LONGEST one is the real article. Falls back
+    to the full page if no <article> tag is found.
     """
-    match = re.search(r"<article[^>]*>(.*?)</article>", html, re.IGNORECASE | re.DOTALL)
-    return match.group(1) if match else html
+    matches = re.findall(r"<article[^>]*>(.*?)</article>", html, re.IGNORECASE | re.DOTALL)
+    if not matches:
+        return html
+    return max(matches, key=len)
 
-def extract_video_embeds(html):
+
+# Words in a CLASS/ID of any ancestor element that mean "this is not the
+# story itself": related/recommended/sidebar/promo/ad/playlist widgets.
+_WIDGET_ATTR_RE = re.compile(
+    r"(related|recommend|sidebar|widget|trending|promo|sponsor|advert|\bads?\b|"
+    r"playlist|carousel|up-?next|more-?videos|latest-?videos|newsletter|"
+    r"popular|taboola|outbrain|footer|comment)", re.IGNORECASE)
+_WIDGET_TAGS = {"aside", "nav", "footer", "header", "form"}
+
+# Phrases in the text right before a video that mark it as a "videos from
+# the site" promo player rather than something the article is about.
+_WIDGET_TEXT_MARKERS = (
+    "latest videos", "more videos", "watch next", "up next", "recommended",
+    "related video", "you may also like", "you might also like", "sponsored",
+    "advertisement", "trending videos", "popular videos", "from louder",
+    "more from", "also watch", "don't miss",
+)
+
+_YT_ID_RE = re.compile(
+    r"(?:youtube(?:-nocookie)?\.com/(?:embed/|watch\?(?:[^\"'#\s]*&)?v=|shorts/)|youtu\.be/)([A-Za-z0-9_-]{11})",
+    re.IGNORECASE)
+
+_VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+              "meta", "param", "source", "track", "wbr"}
+
+
+class _VideoCandidateParser(HTMLParser):
+    """Walks the article HTML once, recording each YouTube iframe/link along
+    with: the ancestor chain (to detect sidebar/related/ad widgets), the
+    nearest preceding h2/h3 text, and the visible text just before it."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.stack = []          # [(tag, attrs_str)]
+        self.text_so_far = []    # recent visible text chunks
+        self.last_heading = None
+        self._in_heading = None
+        self._heading_buf = []
+        self.candidates = []
+
+    def _recent_text(self, n=300):
+        return " ".join(" ".join(self.text_so_far[-40:]).split())[-n:]
+
+    def handle_starttag(self, tag, attrs):
+        attr_dict = {k: (v or "") for k, v in attrs}
+        attr_str = " ".join(attr_dict.get(k, "") for k in ("class", "id", "data-component", "data-widget"))
+        if tag in ("h2", "h3"):
+            self._in_heading = tag
+            self._heading_buf = []
+        src = None
+        if tag == "iframe":
+            src = attr_dict.get("src") or attr_dict.get("data-src") or ""
+        elif tag == "a":
+            src = attr_dict.get("href", "")
+        if src:
+            m = _YT_ID_RE.search(src)
+            if m:
+                self.candidates.append({
+                    "id": m.group(1),
+                    "kind": tag,
+                    "ancestors": [(t, a) for t, a in self.stack],
+                    "heading": self.last_heading,
+                    "before": self._recent_text(),
+                })
+        if tag not in _VOID_TAGS:
+            self.stack.append((tag, attr_str))
+
+    def handle_startendtag(self, tag, attrs):
+        # self-closing: treat like a start tag without pushing
+        self.handle_starttag(tag, attrs)
+        if tag not in _VOID_TAGS and self.stack and self.stack[-1][0] == tag:
+            self.stack.pop()
+
+    def handle_endtag(self, tag):
+        if tag in ("h2", "h3") and self._in_heading == tag:
+            self.last_heading = " ".join("".join(self._heading_buf).split()) or self.last_heading
+            self._in_heading = None
+        for i in range(len(self.stack) - 1, -1, -1):
+            if self.stack[i][0] == tag:
+                del self.stack[i:]
+                break
+
+    def handle_data(self, data):
+        if self._in_heading:
+            self._heading_buf.append(data)
+        if data.strip():
+            self.text_so_far.append(data.strip())
+
+
+def _youtube_oembed(video_id):
     """
-    Extracts YouTube video links embedded in the source article, along
-    with the nearest preceding <h2>/<h3> heading text (used to match each
-    video to the right section when the drafting model restructures the
-    article under its own headings). Returns a list of
-    {"url": ..., "heading": ...} dicts, deduplicated by video ID. Only
-    YouTube is handled for now, since it's by far the most common
-    platform for the kind of archival live-performance clips this blog
-    covers. Scoped to the article body only (see
-    _extract_article_body_html) so sidebar/recommended-video widgets for
-    unrelated stories don't get swept in.
+    Returns (status, title, channel). status is "ok", "unavailable" (the
+    video is private/removed/not embeddable -- YouTube answers 401/403/404),
+    or "unknown" (network problem; caller keeps the video, title unknown).
     """
-    html = _extract_article_body_html(html)
+    try:
+        resp = requests.get(
+            "https://www.youtube.com/oembed",
+            params={"url": f"https://www.youtube.com/watch?v={video_id}", "format": "json"},
+            headers={"User-Agent": USER_AGENT}, timeout=8,
+        )
+    except requests.RequestException:
+        return "unknown", None, None
+    if resp.status_code in (401, 403, 404):
+        return "unavailable", None, None
+    if not resp.ok:
+        return "unknown", None, None
+    try:
+        data = resp.json()
+    except ValueError:
+        return "unknown", None, None
+    return "ok", data.get("title"), data.get("author_name")
+
+
+_TITLE_STOPWORDS = {
+    "the", "a", "an", "and", "or", "of", "in", "on", "for", "to", "with", "at",
+    "is", "are", "was", "were", "be", "by", "from", "after", "before", "into",
+    "about", "this", "that", "his", "her", "its", "official", "video", "music",
+    "live", "full", "says", "say", "new", "they", "them", "their", "we", "he",
+    "she", "it", "as", "get", "got", "said", "no", "not",
+}
+
+
+def _content_words(text):
+    return {w for w in re.findall(r"[a-z0-9']+", (text or "").lower())
+            if len(w) > 2 and w not in _TITLE_STOPWORDS}
+
+
+def extract_video_embeds(html, article_title=None, check_availability=True):
+    """
+    Extracts YouTube videos that belong to the source article ITSELF.
+
+    Returns a list (document order, deduplicated by video ID) of
+    {"url", "heading", "title", "channel", "context"} dicts, where title /
+    channel come from YouTube's oEmbed endpoint (they let the drafting step
+    judge whether the video is actually relevant) and context is the
+    visible text just before the video in the source.
+
+    Dropped outright:
+      - videos inside sidebars / "related" / "recommended" / ad / playlist /
+        newsletter / comment / header / footer containers (checked on the
+        class and id of EVERY ancestor element, not just the nearest);
+      - videos YouTube reports as private, removed or not embeddable (these
+        are exactly the ones that show up as errors in the editor).
+    Videos right after a "Latest videos" / "More videos" / "Watch next"
+    style label are site promo players, not story content: they are kept
+    only if their title shares at least two meaningful words with the
+    source article's headline (so a clip clearly about this story survives,
+    while an unrelated "TURNSTILE - BIRDS" music video does not).
+    """
+    body = _extract_article_body_html(html)
+    parser = _VideoCandidateParser()
+    try:
+        parser.feed(body)
+        parser.close()
+    except Exception as e:  # malformed HTML must never break the run
+        print(f"[warn] Video extraction hit malformed HTML ({e}); using what was parsed.")
+
     results = []
     seen_ids = set()
+    headline_words = _content_words(article_title)
 
-    for m in re.finditer(
-        r'<iframe[^>]+src=["\']https?://(?:www\.)?youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{6,})[^"\']*["\']',
-        html, re.IGNORECASE,
-    ):
-        video_id = m.group(1)
-        if video_id in seen_ids:
+    for cand in parser.candidates:
+        vid = cand["id"]
+        if vid in seen_ids:
             continue
-        seen_ids.add(video_id)
-        results.append({
-            "url": f"https://www.youtube.com/watch?v={video_id}",
-            "heading": _nearest_preceding_heading(html, m.start()),
-        })
+        seen_ids.add(vid)
 
-    for m in re.finditer(
-        r'https?://(?:www\.)?(?:youtube\.com/watch\?v=([A-Za-z0-9_-]{6,})|youtu\.be/([A-Za-z0-9_-]{6,}))',
-        html, re.IGNORECASE,
-    ):
-        video_id = m.group(1) or m.group(2)
-        if video_id in seen_ids:
+        in_widget = any(
+            tag in _WIDGET_TAGS or _WIDGET_ATTR_RE.search(attrs or "")
+            for tag, attrs in cand["ancestors"]
+        )
+        if in_widget:
+            print(f"[info] Ignoring video {vid}: inside a sidebar/related/ad-style container.")
             continue
-        seen_ids.add(video_id)
+
+        before_lower = cand["before"].lower()
+        promo_labelled = cand["kind"] == "iframe" and any(
+            marker in before_lower[-160:] for marker in _WIDGET_TEXT_MARKERS)
+
+        status, title, channel = ("unknown", None, None)
+        if check_availability:
+            status, title, channel = _youtube_oembed(vid)
+            if status == "unavailable":
+                print(f"[info] Ignoring video {vid}: unavailable or embedding disabled.")
+                continue
+
+        if promo_labelled:
+            overlap = len(headline_words & _content_words(title))
+            if title is None or overlap < 2:
+                print(f"[info] Ignoring video {vid} ({title!r}): sits under a site 'latest/more videos' "
+                      f"promo label and its title doesn't match this story.")
+                continue
+
         results.append({
-            "url": f"https://www.youtube.com/watch?v={video_id}",
-            "heading": _nearest_preceding_heading(html, m.start()),
+            "url": f"https://www.youtube.com/watch?v={vid}",
+            "heading": cand["heading"],
+            "title": title,
+            "channel": channel,
+            "context": cand["before"][-160:],
         })
 
     return results

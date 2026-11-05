@@ -15,7 +15,15 @@ from config import (
     WP_BASE_URL, WP_API_BASE_URL, WP_PROXY_TOKEN,
     WP_USERNAME, WP_APP_PASSWORD, POST_STATUS,
     YOAST_TITLE_FIELD, YOAST_META_DESC_FIELD, YOAST_FOCUS_KEYWORD_FIELD,
+    DISABLE_NEWSLETTER_BY_DEFAULT, FEATURES_PARENT_CATEGORY,
+    FEATURE_SUBCATEGORIES, ALSO_FILE_UNDER_FEATURES_PARENT, TARGET_CATEGORY,
 )
+
+# Jetpack's "Newsletter -> Send this post to subscribers" toggle is stored as
+# this post meta key (true = do NOT email subscribers). It is exposed through
+# the REST API, which is how the agent can default the toggle to OFF.
+JETPACK_DONT_EMAIL_META = "_jetpack_dont_email_post_to_subs"
+
 
 AUTH = HTTPBasicAuth(WP_USERNAME, WP_APP_PASSWORD)
 REQUEST_TIMEOUT = 45
@@ -223,6 +231,78 @@ def get_or_create_category(name):
     return create.json()["id"]
 
 
+_CATEGORY_ID_CACHE = {}
+
+
+def _find_category(slug=None, name=None, parent=None):
+    """Looks a category up by slug first, then exact (case-insensitive) name.
+    If parent is given, only a category with that parent ID matches."""
+    queries = []
+    if slug:
+        queries.append({"slug": slug})
+    if name:
+        queries.append({"search": name})
+    for params in queries:
+        resp = _session.get(f"{_api_root()}/categories",
+                            params={**params, "per_page": 100},
+                            auth=AUTH, timeout=30)
+        resp.raise_for_status()
+        for cat in resp.json():
+            if "slug" not in params and cat["name"].strip().lower() != name.strip().lower():
+                continue
+            if parent is not None and cat.get("parent") != parent:
+                continue
+            return cat["id"]
+    return None
+
+
+def get_category_ids_for_kind(kind):
+    """
+    Maps an article's category 'kind' (see config.FEATURE_SUBCATEGORIES) to
+    the list of WordPress category IDs to file it under.
+
+      "latest-news" / unknown  -> [Latest News]            (TARGET_CATEGORY)
+      "flashback" / "guitar-zone" / "top-lists"
+                               -> [that sub-category (+ Features parent)]
+
+    A feature sub-category is looked up by slug under the Features parent;
+    if it doesn't exist it is created under Features. If anything goes
+    wrong, falls back to Latest News rather than failing the post.
+    """
+    kind = (kind or "latest-news").strip().lower()
+    if kind in _CATEGORY_ID_CACHE:
+        return list(_CATEGORY_ID_CACHE[kind])
+
+    ids = None
+    if kind in FEATURE_SUBCATEGORIES:
+        try:
+            spec = FEATURE_SUBCATEGORIES[kind]
+            parent_id = _find_category(slug=FEATURES_PARENT_CATEGORY.lower(),
+                                       name=FEATURES_PARENT_CATEGORY, parent=0)
+            if parent_id is None:
+                parent_id = get_or_create_category(FEATURES_PARENT_CATEGORY)
+            child_id = _find_category(slug=spec["slug"], name=spec["name"], parent=parent_id)
+            if child_id is None:
+                create = _session.post(
+                    f"{_api_root()}/categories",
+                    json={"name": spec["name"], "slug": spec["slug"], "parent": parent_id},
+                    auth=AUTH, timeout=30)
+                create.raise_for_status()
+                child_id = create.json()["id"]
+            ids = [child_id]
+            if ALSO_FILE_UNDER_FEATURES_PARENT:
+                ids.append(parent_id)
+        except Exception as e:
+            print(f"[warn] Could not resolve feature category {kind!r} ({e}); "
+                  f"falling back to {TARGET_CATEGORY!r}.")
+            ids = None
+
+    if ids is None:
+        ids = [get_or_create_category(TARGET_CATEGORY)]
+    _CATEGORY_ID_CACHE[kind] = list(ids)
+    return list(ids)
+
+
 def search_related_posts(keyword, limit=3):
     """Used for internal linking suggestions."""
     resp = _session.get(
@@ -306,7 +386,8 @@ def upload_media(image_bytes, filename, alt_text="", content_type="image/jpeg", 
     return {"id": media["id"], "source_url": media.get("source_url", "")}
 
 
-def create_post(article, category_id=None, featured_media_id=None, post_status=None):
+def create_post(article, category_id=None, featured_media_id=None, post_status=None,
+                category_ids=None):
     """
     article: dict with keys:
       title, content_html, excerpt, tags (list[str]),
@@ -331,11 +412,25 @@ def create_post(article, category_id=None, featured_media_id=None, post_status=N
         },
     }
 
-    if category_id:
+    if category_ids:
+        payload["categories"] = list(category_ids)
+    elif category_id:
         payload["categories"] = [category_id]
     if featured_media_id:
         payload["featured_media"] = featured_media_id
 
+    if DISABLE_NEWSLETTER_BY_DEFAULT:
+        # Start with Jetpack's "Send this post to subscribers" toggle OFF.
+        payload["meta"][JETPACK_DONT_EMAIL_META] = True
+
     resp = _session.post(f"{_api_root()}/posts", json=payload, auth=AUTH, timeout=60)
+    if (not resp.ok and DISABLE_NEWSLETTER_BY_DEFAULT
+            and resp.status_code in (400, 401, 403) and JETPACK_DONT_EMAIL_META in resp.text):
+        # Never lose an article over the newsletter flag (e.g. Jetpack
+        # updated and the key is no longer writable): retry without it.
+        print(f"[warn] WordPress rejected the newsletter meta key ({resp.status_code}); "
+              "retrying without it.")
+        payload["meta"].pop(JETPACK_DONT_EMAIL_META, None)
+        resp = _session.post(f"{_api_root()}/posts", json=payload, auth=AUTH, timeout=60)
     resp.raise_for_status()
     return resp.json()

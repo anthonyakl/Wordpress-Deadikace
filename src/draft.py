@@ -18,6 +18,8 @@ Uses an LLM (Claude or Gemini, whichever is configured) to:
    source material (see DRAFT_SYSTEM_PROMPT rule 2b).
 """
 
+import base64
+import io
 import json
 import re
 
@@ -27,6 +29,7 @@ from config import (
     GEMINI_API_KEY, GEMINI_MODEL,
     SITE_VOICE_GUIDELINES,
     ENABLE_DEEP_RESEARCH, RESEARCH_MAX_SEARCHES,
+    ENABLE_IMAGE_VISION_CHECK,
 )
 
 DRAFT_SYSTEM_PROMPT = f"""You are a staff news writer for Deadikace, a rock music blog.
@@ -266,30 +269,50 @@ own further research) as their source material.
     sentences. A few longer sentences are fine for natural variety, but
     they should be a small minority (well under a quarter of all
     sentences), not close to half.
-4c. ILLUSTRATIVE IMAGES: propose 1-2 additional images for a short article
-    (under ~500 words), or up to 3-4 for a longer one -- scale to length,
-    don't force more images than the content naturally supports. Each one
-    should illustrate something SPECIFIC actually mentioned in the
-    article (a named album's cover, a named venue, a specific person or
-    event), not a generic mood shot. Write the search query as a
-    specific, disambiguating phrase (see the illustrative_images schema
-    field below for the exact reasoning and an example) -- this is
-    searched against Wikimedia Commons, so a vague or bare-name query
-    risks matching the wrong, unrelated subject. For placement, prefer
-    right after the H2 heading whose section that image best supports;
-    only use the "middle of the article" fallback if there's truly no
-    heading it fits better under. If the article has no natural subject
-    for extra images beyond the featured image (e.g. a very short news
-    brief), return an empty illustrative_images array rather than forcing
-    irrelevant ones in.
-4d. EMBED VIDEOS FROM THE SOURCE: if any source block above lists
-    "Videos embedded in this source", include EVERY one of those videos
-    in video_embeds, using the exact URL given -- never invent a URL and
-    never skip a video just to save space. Set placement_after_heading to
-    whichever heading in YOUR OWN article structure covers that same
-    item; use the video's listed "near heading" text as a hint for which
-    item it belongs to, since the source's heading wording may differ
-    from yours.
+4c. ILLUSTRATIVE IMAGES: propose 0-2 additional images for a short article
+    (under ~500 words), or up to 3 for a longer one -- never more than
+    the content naturally supports, and ZERO is a perfectly good answer
+    (return an empty illustrative_images array). A wrong or mismatched
+    picture is much worse than no picture. Each image must illustrate
+    something SPECIFIC and PHOTOGRAPHABLE that is actually mentioned in
+    the article: a named person/band (a portrait or generic live shot),
+    a named venue, a named album cover. Searches run against Wikimedia
+    Commons, which does NOT have photos of specific nights, tours,
+    auctions or news events -- so NEVER ask for "X performing at <specific
+    show>", for an object/guitar/memorabilia, or for anything that only
+    exists as a news moment. Ask for the person or place in general
+    ("Ian Gillan Deep Purple concert", "Hollywood Bowl exterior").
+    The caption must describe ONLY what such a search could plausibly
+    show (e.g. "Ian Gillan of Deep Purple"), never a claim about the
+    specific event the article reports. Every proposed image is checked
+    automatically against its caption and silently dropped if it doesn't
+    clearly match, so an over-specific caption just wastes the slot.
+    For placement, prefer right after the H2 heading whose section that
+    image best supports; only use "" (middle of the article) if no
+    heading fits.
+4d. VIDEOS -- FEW, RELEVANT, WELL PLACED. If a source block lists "Videos
+    embedded in this source" (each with its YouTube title/channel when
+    known), you may embed AT MOST 2 of them, and usually 0 or 1. Embed a
+    video ONLY if at least one of these is true:
+      (a) it IS the interview, speech, press conference or footage the
+          article is reporting on (the article is essentially about what
+          was said/shown in that video), or
+      (b) it shows a specific performance, song or event that the
+          article discusses BY NAME.
+    Do NOT embed: official music videos or clips for songs/albums the
+    article never discusses; "latest videos"/promo players; videos about
+    other artists or other stories; videos whose title you can't connect
+    to a specific sentence in your article. When unsure, leave it out --
+    a shorter, cleaner article beats a padded one. Use the exact URL
+    given; never invent a URL.
+    PLACEMENT (set "placement" for each video):
+      - "end": the video relates to the WHOLE article (e.g. the source
+        interview the article is built on). It is shown after the last
+        paragraph of the article body.
+      - "after_paragraph": the video relates to ONE paragraph. Put in
+        "after_paragraph_text" the first 8-12 words of that paragraph,
+        copied exactly from your content_html. The video is shown BELOW
+        that paragraph, never above it.
 4e. COVER EVERY ITEM IN A ROUNDUP/LIST SOURCE: if the source material is
     a roundup-style article covering multiple distinct items (e.g. "12
     live performances just uploaded", "10 albums you need to hear"),
@@ -308,7 +331,11 @@ own further research) as their source material.
     (Wikimedia search) will often come up empty for exactly this case --
     when that's what the article calls for, use source_images instead of
     (or alongside) a Wikimedia search. Match the image to what its alt
-    text or nearby heading suggests it depicts; never guess.
+    text or nearby heading suggests it depicts; never guess. Use the
+    alt text (or a plain restatement of it) as the caption -- do not
+    invent a more specific caption than the alt text supports. Every
+    source image is also checked automatically against its caption and
+    dropped if it doesn't clearly match.
 4g. SOURCES & FURTHER READING SECTION (complementary sources only): the
     numbered Source blocks are the outlets (e.g. Louder Sound, Loudwire,
     Rolling Stone) that already reported this same core story -- they
@@ -332,19 +359,47 @@ own further research) as their source material.
     URL. Label each link with the outlet or publication's name, e.g.
     <li><a href="https://www.rollingstone.com/...">Rolling Stone</a></li>.
 
-5. TITLE STYLE: the title must be specific, accurate, AND genuinely
-   eye-catching / SEO-optimized -- not a dry, academic-sounding
-   description of the article's topic. Avoid vague, report-style
-   phrasing like "Examining the Overlooked Solo Albums From Members of
-   the Eagles" -- prefer a direct, punchy phrasing a reader would
-   actually want to click and that matches how people search, e.g. "The
-   Best Eagles Solo Albums You May Have Missed" for that same article.
-   Where it genuinely fits the content, lean on proven high-CTR patterns
-   -- "The Best X You May Have Missed", "Why X Still Matters", "X Songs
-   You Forgot Were Written By Y", direct numbers ("5 Deep Cuts..."),
-   or a strong direct claim -- without turning into misleading clickbait
-   or overstating what the article actually says. Every word in the
-   title must still be something the article backs up.
+5. TITLE STYLE: write the kind of headline a reader would click on a
+   Facebook feed, where the page is shared. It must be SHORT, PUNCHY,
+   EASY TO UNDERSTAND AT A GLANCE and still 100% accurate.
+   - Length: aim for 40-60 characters; never more than 65. Shorter wins.
+   - ONE idea per title: who + what happened. Lead with the biggest name
+     (the artist/band), then a strong active verb, then the single most
+     interesting detail. At most TWO names after the main subject.
+   - Never cram a list of details into the title. Avoid "&" chains,
+     "and More", "Plus ...", "X, Y & Z" lists of 3+ items, colon
+     sub-titles that stack several facts, song-title dumps, and
+     insider shorthand a casual fan wouldn't know (use "Guns N' Roses",
+     not "GN'R"; no unexplained abbreviations or nicknames).
+   - Prefer plain, vivid verbs ("Reunites With", "Brings Out", "Opens
+     Up About", "Reveals", "Stuns", "Cancels") over report-style nouns
+     ("Examination", "Overview", "Reflections"). Use an emotive verb
+     like "Stuns" only when the sources describe a genuinely standout
+     moment; otherwise use a neutral active verb. Never overstate.
+   - No clickbait that the article doesn't back up, no ALL CAPS, no
+     emoji, no "You Won't Believe".
+   - For lists/features, proven patterns are fine: "5 Deep Cuts...",
+     "The Best X You May Have Missed", "Why X Still Matters".
+   EXAMPLE of what NOT to write -> what to write instead:
+     BAD  (too long, crowded, insider shorthand):
+          "Aerosmith & Friends Night Two: Run-DMC, GN'R's Rare Deep Cuts & More"
+     GOOD (short, one clear story, easy to share):
+          "Aerosmith Stuns Hollywood Bowl with Guns N' Roses and Run-DMC"
+   Every word in the title must still be backed by the article.
+5b. CATEGORY: set "category" to exactly one of:
+    - "latest-news": the default. Timely news: announcements, tours,
+      releases, deaths, interviews with fresh quotes, live-show reports,
+      reunions.
+    - "flashback": evergreen history -- the story behind a song/album,
+      an anecdote from a band's past, an album anniversary, a
+      "this is how it happened" retrospective not tied to a new event.
+    - "guitar-zone": stories about a specific guitar, amp or piece of
+      gear (a celebrity guitar sold at auction, a famous instrument's
+      history, a new signature model, a pedal/amp story).
+    - "top-lists": rankings and list articles (top 10 albums, "X facts
+      about a band", best-of lists, "5 deep cuts...").
+    If an article fits more than one, choose the most specific of
+    top-lists / guitar-zone / flashback; otherwise "latest-news".
 6. Output must be a valid JSON ARRAY, and NOTHING else -- no markdown code
    fences, no preamble, no explanation. In the normal case (one story),
    the array has exactly ONE element. If rule 0 applies (the source
@@ -355,7 +410,8 @@ own further research) as their source material.
 
 [
   {{
-    "title": "string, accurate and specific, states the actual news or angle, written to be eye-catching and SEO-friendly (see rule 5), under 70 chars",
+    "title": "string, short and punchy Facebook-friendly headline per rule 5, ideally 40-60 chars, never over 65",
+    "category": "one of: latest-news, flashback, guitar-zone, top-lists (see rule 5b)",
     "seo_title": "string, SEO title tag, under 60 chars, includes primary keyword",
     "meta_description": "string, under 155 chars, includes primary keyword, makes people want to click",
     "focus_keyword": "string, 2-4 word primary SEO keyword phrase for this article",
@@ -373,8 +429,9 @@ own further research) as their source material.
     ],
     "video_embeds": [
       {{
-        "url": "string, one of the exact video URLs listed under a source's \\"Videos embedded in this source\\" block above -- never invent or guess a video URL",
-        "placement_after_heading": "string, the exact text of the <h2> heading in content_html after which this video should be embedded -- match it to whichever heading in YOUR article covers the same item/performance the video is of"
+        "url": "string, one of the exact video URLs listed under a source's \"Videos embedded in this source\" block above -- never invent or guess a video URL. At most 2 entries; an empty array is normal.",
+        "placement": "\"end\" (video is about the whole article) or \"after_paragraph\" (video is about one specific paragraph)",
+        "after_paragraph_text": "only when placement is after_paragraph: the first 8-12 words of that paragraph, copied exactly from content_html; otherwise \"\""
       }}
     ],
     "source_images": [
@@ -758,6 +815,153 @@ def filter_rock_relevant_topics(topics):
     print(f"[info] Rock-relevance filter kept {len(filtered)} of {len(topics)} topics.")
     return filtered
 
+TRIAGE_SYSTEM_PROMPT = """You are the editor-in-chief of Deadikace, a rock music blog for fans of classic rock.
+For each numbered headline (with its outlet and URL path), return one JSON object with:
+- "n": the headline number
+- "content_type": one of
+    "news"        -- a real news story, interview, review, live report, announcement
+    "feature"     -- an evergreen history / retrospective / list / gear article that is genuinely readable as an article
+    "non_article" -- anything that is NOT a readable article we could rewrite: quizzes, trivia, polls, "take the quiz" pages, photo galleries, shopping/deals/gift guides, giveaways/competitions, podcast or video-only pages, newsletter or subscription promos, sponsored content
+- "genre_tier": the music-genre priority of the story's PRIMARY subject
+    "preferred"     -- classic rock, blues, blues rock, funk, folk, folk rock, heavy/hard rock, southern rock, psychedelic and progressive classic rock, and old-school heavy metal (Black Sabbath, Ozzy, Deep Purple, Judas Priest, Iron Maiden, Dio, Rainbow, Motorhead, Metallica's mainstream era, etc.)
+    "neutral"       -- mainstream/alternative rock, grunge, glam, general rock culture, anything that doesn't clearly fit the other two
+    "deprioritized" -- indie rock, thrash metal (Slayer, Megadeth, Anthrax, Testament...), extreme metal (death, black, doom, grind, metalcore...), punk, punk rock, hardcore, emo, and post-punk revival bands
+  Judge the story's primary subject, not just the artist name. Big mainstream crossover acts are not deprioritized just for being metal.
+Respond with ONLY a JSON array of these objects, one per headline. No other text."""
+
+
+_NON_ARTICLE_RE = re.compile(
+    r"(\bquiz\b|\btrivia\b|how well do you know|take the quiz|\bpoll\b|"
+    r"\bgiveaway\b|\bsweepstakes\b|\bcompetition\b|/quiz/|/quizzes/|/gallery/|"
+    r"/galleries/|/competitions?/|/deals?/|/shopping/|/giveaways?/|/podcasts?/|"
+    r"\bgift guide\b|best .{0,30}\bdeals\b)",
+    re.IGNORECASE,
+)
+
+
+def looks_like_non_article(item):
+    """Cheap deterministic check (headline + URL) for quizzes, galleries,
+    giveaways, deal roundups and similar pages that aren't real articles."""
+    return bool(_NON_ARTICLE_RE.search(f"{item.get('title', '')} {item.get('link', '')}"))
+
+
+def classify_topics(topics):
+    """
+    One batched LLM call that tags each topic with content_type
+    ("news" / "feature" / "non_article") and genre_tier ("preferred" /
+    "neutral" / "deprioritized"), stored on topic["content_type"] and
+    topic["genre_tier"]. Topics the model tags "non_article" are removed.
+    On any failure every topic is kept with tier "neutral" (the
+    deterministic quiz/gallery check in looks_like_non_article still
+    applies in main.py). Returns the surviving topics.
+    """
+    if not topics:
+        return topics
+
+    def _outlet_path(t):
+        item = t["items"][0]
+        link = item.get("link", "")
+        path = re.sub(r"^https?://[^/]+", "", link)[:90]
+        return f"{item['title']}  [{item.get('source', '?')}{path}]"
+
+    headline_list = "\n".join(f"{i + 1}. {_outlet_path(t)}" for i, t in enumerate(topics))
+    user_prompt = f"Headlines:\n{headline_list}\n\nReturn the JSON array now."
+
+    tags = {}
+    try:
+        raw = _clean_json_text(_call_llm(TRIAGE_SYSTEM_PROMPT, user_prompt, max_tokens=3000))
+        for obj in json.loads(raw):
+            tags[int(obj["n"]) - 1] = obj
+    except Exception as e:
+        print(f"[warn] Topic triage (content type / genre tier) failed ({e}); "
+              "keeping all topics with neutral genre priority.")
+
+    kept = []
+    for i, t in enumerate(topics):
+        obj = tags.get(i, {})
+        content_type = str(obj.get("content_type", "news")).lower()
+        tier = str(obj.get("genre_tier", "neutral")).lower()
+        if tier not in ("preferred", "neutral", "deprioritized"):
+            tier = "neutral"
+        if content_type == "non_article":
+            print(f"[info] Skipping non-article page (quiz/gallery/promo/etc.): {t['items'][0]['title']}")
+            continue
+        t["content_type"] = content_type
+        t["genre_tier"] = tier
+        kept.append(t)
+    return kept
+
+
+IMAGE_CHECK_SYSTEM_PROMPT = """You check whether a photo matches the caption an editor wants to print under it.
+You are given one image and its intended caption/description.
+Decide whether the image clearly shows the KIND OF SCENE AND SUBJECT the caption describes -- for example "musician performing on stage", "album cover with that title visible", "outside view of a named venue", "portrait of a musician".
+Rules:
+- Do NOT try to identify real people from their faces. Judge scene type, visible text (names on covers, signs, banners) and plausibility only.
+- Answer false if the image mainly shows something else: objects or instruments in a display case or museum, memorabilia, merchandise, a wax figure or statue, a crowd with no performer, a poster of someone else, a logo or text graphic, a screenshot, a different venue or album than the visible text indicates, or you simply cannot tell.
+- Answer true only if you would be comfortable printing this exact caption under this exact photo.
+Respond with ONLY JSON: {"match": true or false, "reason": "short reason"}"""
+
+
+def _image_to_jpeg_b64(image_bytes, max_side=768):
+    from PIL import Image
+    img = Image.open(io.BytesIO(image_bytes))
+    img = img.convert("RGB")
+    img.thumbnail((max_side, max_side))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=80)
+    return base64.b64encode(buf.getvalue()).decode("ascii"), buf.getvalue()
+
+
+def verify_image_matches(image_bytes, description):
+    """
+    Vision check: does this image really show what `description` (the
+    caption we intend to print) says? Returns True/False. Fails CLOSED:
+    any error (no key, API failure, unreadable image, unparsable answer)
+    returns False, because a missing extra image is better than a wrong
+    one. Skipped (returns True) only when ENABLE_IMAGE_VISION_CHECK is off.
+    """
+    if not ENABLE_IMAGE_VISION_CHECK:
+        return True
+    try:
+        b64, jpeg = _image_to_jpeg_b64(image_bytes)
+        user_text = f"Intended caption/description: {description}\n\nDoes the image match? Respond with the JSON now."
+        if LLM_PROVIDER == "anthropic":
+            import anthropic
+            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+            response = client.messages.create(
+                model=CLAUDE_MODEL, max_tokens=300,
+                system=IMAGE_CHECK_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
+                    {"type": "text", "text": user_text},
+                ]}],
+            )
+            raw = response.content[0].text
+        elif LLM_PROVIDER == "gemini":
+            from google import genai
+            from google.genai import types
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[types.Part.from_bytes(data=jpeg, mime_type="image/jpeg"), user_text],
+                config=types.GenerateContentConfig(
+                    system_instruction=IMAGE_CHECK_SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                ),
+            )
+            raw = response.text
+        else:
+            return False
+        result = json.loads(_clean_json_text(raw))
+        ok = result.get("match") is True
+        print(f"[info] Image check for {description!r}: "
+              f"{'MATCH' if ok else 'REJECTED'} ({result.get('reason', '')})")
+        return ok
+    except Exception as e:
+        print(f"[warn] Image check failed for {description!r} ({e}); skipping the image to be safe.")
+        return False
+
+
 WITHIN_BATCH_DUPLICATE_SYSTEM_PROMPT = """You are an editor for Deadikace,
 a rock music blog, checking a batch of candidate news topics against EACH
 OTHER (not against older posts) to catch cases where the same underlying
@@ -849,7 +1053,10 @@ def _build_source_material(topic):
         video_lines = ""
         if video_embeds:
             video_list = "\n".join(
-                f"  - {v['url']}" + (f" (near heading: \"{v['heading']}\")" if v.get("heading") else "")
+                f"  - {v['url']}"
+                + (f" (YouTube title: \"{v['title']}\"" + (f", channel: {v['channel']}" if v.get("channel") else "") + ")"
+                   if v.get("title") else "")
+                + (f" (near heading: \"{v['heading']}\")" if v.get("heading") else "")
                 for v in video_embeds
             )
             video_lines = f"\nVideos embedded in this source:\n{video_list}"
@@ -938,6 +1145,39 @@ def draft_article(topic):
             article["source_item_indices"] = list(range(1, len(topic["items"]) + 1))
 
     return articles
+
+TITLE_TIGHTEN_SYSTEM_PROMPT = """You are a headline editor for Deadikace, a rock music blog whose posts are shared on Facebook.
+Rewrite the headline so it is SHORT (40-60 characters, never more than 65), punchy and instantly understandable, keeping ONLY the single most interesting fact. Lead with the main artist/band and an active verb. At most two names after the main subject. No "&" chains, no "and More", no colon sub-titles, no unexplained abbreviations ("Guns N' Roses", not "GN'R"). Do not add any fact that is not in the original headline or the article excerpt. No emoji, no ALL CAPS.
+Example: "Aerosmith & Friends Night Two: Run-DMC, GN'R's Rare Deep Cuts & More" -> "Aerosmith Stuns Hollywood Bowl with Guns N' Roses and Run-DMC"
+Respond with ONLY JSON: {"title": "..."}"""
+
+MAX_TITLE_CHARS = 65
+
+
+def tighten_title(article):
+    """If the drafted title is longer than MAX_TITLE_CHARS (or is a crowded
+    'A, B & More' style title), asks the model for a shorter version. Keeps
+    the original title if the call fails or the result is no better."""
+    title = (article.get("title") or "").strip()
+    crowded = bool(re.search(r"(&|\band\b)\s+more\b|:\s.*,.*(&|\band\b)", title, re.IGNORECASE))
+    if title and len(title) <= MAX_TITLE_CHARS and not crowded:
+        return article
+    excerpt = article.get("excerpt", "")
+    try:
+        raw = _clean_json_text(_call_llm(
+            TITLE_TIGHTEN_SYSTEM_PROMPT,
+            f"Headline: {title}\nArticle excerpt: {excerpt}\n\nReturn the JSON now.",
+            max_tokens=200,
+        ))
+        new_title = (json.loads(raw).get("title") or "").strip().strip('"')
+    except Exception as e:
+        print(f"[warn] Title tightening failed ({e}); keeping the original title.")
+        return article
+    if 15 <= len(new_title) <= MAX_TITLE_CHARS and (len(new_title) < len(title) or crowded):
+        print(f"[info] Tightened title: {title!r} -> {new_title!r}")
+        article["title"] = new_title
+    return article
+
 
 VERIFY_SYSTEM_PROMPT = """You are a copy editor fact-checking AND
 readability-editing a draft news article against its source material,

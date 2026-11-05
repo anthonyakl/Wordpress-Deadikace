@@ -136,6 +136,47 @@ EXCLUDE_KEYWORDS = _env_list(
 # to match one you already have (e.g. "Latest News").
 TARGET_CATEGORY = _env("TARGET_CATEGORY", "Latest News")
 
+# --- Category routing ---
+# The drafting model classifies each article as one of: "latest-news"
+# (default, TARGET_CATEGORY above), "flashback" (evergreen history /
+# album-retrospective / "story behind the song" pieces), "guitar-zone"
+# (stories about a specific guitar/gear: auction, restoration, signature
+# model...), or "top-lists" (rankings, top-10s, "X facts about..." lists).
+# The last three are sub-categories of FEATURES_PARENT_CATEGORY on the site.
+FEATURES_PARENT_CATEGORY = _env("FEATURES_PARENT_CATEGORY", "Features")
+FEATURE_SUBCATEGORIES = {
+    "flashback": {"name": "Flashback", "slug": "flashback"},
+    "guitar-zone": {"name": "Guitar Zone", "slug": "guitar-zone"},
+    "top-lists": {"name": "Top Lists", "slug": "top-lists"},
+}
+# Also file feature posts under the parent "Features" category (in addition
+# to the sub-category), so theme sections that query only the parent by
+# exact ID (category__in) still show them.
+ALSO_FILE_UNDER_FEATURES_PARENT = _env_bool("ALSO_FILE_UNDER_FEATURES_PARENT", True)
+
+# --- Newsletter ---
+# The Jetpack "Newsletter -> Send this post to subscribers" toggle defaults
+# to ON for every new post. When this is true, the agent sets Jetpack's
+# post meta _jetpack_dont_email_post_to_subs = true on every post it creates,
+# so the toggle starts OFF and you switch it on manually when you want it.
+DISABLE_NEWSLETTER_BY_DEFAULT = _env_bool("DISABLE_NEWSLETTER_BY_DEFAULT", True)
+
+# --- Videos ---
+# Hard cap on YouTube videos embedded in one article, no matter how many
+# the source page contains or the model proposes.
+MAX_VIDEOS_PER_ARTICLE = _env_int("MAX_VIDEOS_PER_ARTICLE", 2)
+
+# --- Image verification ---
+# Before an extra (Wikimedia / source-body) image goes into an article, ask
+# the configured LLM (vision) whether the picture really shows what its
+# caption says. Images that fail, or that can't be checked, are dropped --
+# no image is better than a wrong image.
+ENABLE_IMAGE_VISION_CHECK = _env_bool("ENABLE_IMAGE_VISION_CHECK", True)
+
+# --- Genre priority (applied on top of the normal topic score) ---
+PREFERRED_GENRE_BONUS = _env_int("PREFERRED_GENRE_BONUS", 30)
+DEPRIORITIZED_GENRE_PENALTY = _env_int("DEPRIORITIZED_GENRE_PENALTY", 35)
+
 # --- "Latest posts" block appended to the end of every article ---
 LATEST_POSTS_COUNT = _env_int("LATEST_POSTS_COUNT", 5)
 

@@ -3,6 +3,8 @@ Entry point: run the full discover -> draft -> publish pipeline once.
 Invoked on a schedule by the GitHub Actions workflow.
 """
 
+import html as html_lib
+import json
 import sys
 import time
 import re
@@ -11,11 +13,13 @@ from difflib import SequenceMatcher
 from config import (
     MAX_ARTICLES_PER_RUN, POST_STATUS, TARGET_CATEGORY, LATEST_POSTS_COUNT,
     ARTICLE_FONT_SIZE_PX, ENABLE_SOURCE_IMAGES, BODY_MEDIA_MAX_WIDTH_PX,
+    MAX_VIDEOS_PER_ARTICLE, PREFERRED_GENRE_BONUS, DEPRIORITIZED_GENRE_PENALTY,
 )
 from discover import get_trending_topics
 from draft import (
     draft_article, filter_rock_relevant_topics, filter_duplicate_topics,
     dedupe_topics_within_batch, verify_and_refine, research_additional_context,
+    classify_topics, looks_like_non_article, verify_image_matches, tighten_title,
 )
 from article_fetch import (
     enrich_topic_with_full_text, download_image_bytes, image_bytes_hash,
@@ -25,6 +29,7 @@ from wikimedia import search_commons_image, download_commons_image
 from wordpress import (
     get_recent_posts_for_dedup, get_latest_posts, get_or_create_category,
     create_post, search_related_posts, check_connectivity, upload_media,
+    get_category_ids_for_kind,
 )
 
 # Core Deadikace artists/bands. A matching recent topic receives a strong
@@ -248,26 +253,88 @@ def _strip_image_placeholders(content_html):
     return content_html
 
 
-# Shared inline styling for every image/video inserted INTO the article
-# body (illustrative Wikimedia images, source-body images, YouTube embeds)
-# -- deliberately NOT applied to the featured/hero image, which WordPress
-# renders separately via its own post-thumbnail template and never touches
-# this content_html. Centers the media, caps its width to a size that
-# feels proportionate to the text column rather than spanning it edge to
-# edge, adds breathing room above/below so it doesn't feel cramped against
-# paragraphs, and keeps captions aligned under the media -- all via inline
-# styles so the result is consistent across articles regardless of the
-# active theme's own CSS (or lack of specific handling for it), and
-# regardless of each image/video's original dimensions. width:100% together
-# with max-width and height:auto lets it shrink further on narrow (mobile)
-# viewports without ever exceeding BODY_MEDIA_MAX_WIDTH_PX, and never
-# distorts the media since no fixed height is set on the media itself.
-_BODY_MEDIA_FIGURE_STYLE = (
-    f"display:block;box-sizing:border-box;max-width:{BODY_MEDIA_MAX_WIDTH_PX}px;"
-    "width:100%;margin:32px auto;text-align:center;"
-)
-_BODY_MEDIA_IMG_STYLE = "display:block;max-width:100%;height:auto;margin:0 auto;"
-_BODY_MEDIA_CAPTION_STYLE = "text-align:center;"
+# ---------------------------------------------------------------------------
+# Body media (images / videos) block markup
+#
+# IMPORTANT: Gutenberg re-generates every block's HTML from its attributes and
+# compares it with what is stored in the post. If they differ by even one
+# character (an extra inline style, a missing class, a custom attribute) the
+# editor shows "Block contains unexpected or invalid content" and the image
+# renders small until you click "Attempt recovery". The previous version of
+# this file put raw inline styles on the <figure>/<img>, which is exactly what
+# triggered that. The markup below is what Gutenberg itself generates for the
+# same settings, so it validates cleanly (verified with the real
+# @wordpress/blocks validator) while still giving a centered, width-capped
+# result via normal block attributes (align / width / margin) rather than
+# hand-written CSS.
+# ---------------------------------------------------------------------------
+_MEDIA_MARGIN = "32px"
+
+
+def _esc_attr(text):
+    return html_lib.escape(text or "", quote=True)
+
+
+def _image_block(src, alt, caption="", media_id=None):
+    """A Gutenberg-valid, centered, width-capped core/image block."""
+    attrs = {
+        "align": "center",
+        "width": f"{BODY_MEDIA_MAX_WIDTH_PX}px",
+        "sizeSlug": "large",
+        "linkDestination": "none",
+        "style": {"spacing": {"margin": {"top": _MEDIA_MARGIN, "bottom": _MEDIA_MARGIN}}},
+    }
+    img_class = ""
+    if media_id:
+        attrs["id"] = int(media_id)
+        img_class = f' class="wp-image-{int(media_id)}"'
+    # Attribute order inside <img> mirrors Gutenberg's save(): src, alt, class, style.
+    img = (f'<img src="{_esc_attr(src)}" alt="{_esc_attr(alt)}"{img_class} '
+           f'style="width:{BODY_MEDIA_MAX_WIDTH_PX}px"/>')
+    figcaption = (f'<figcaption class="wp-element-caption">{html_lib.escape(caption)}</figcaption>'
+                  if caption else "")
+    return (
+        f'<!-- wp:image {json.dumps(attrs, separators=(",", ":"))} -->\n'
+        f'<figure class="wp-block-image aligncenter size-large is-resized" '
+        f'style="margin-top:{_MEDIA_MARGIN};margin-bottom:{_MEDIA_MARGIN}">'
+        f'{img}{figcaption}</figure>\n'
+        f'<!-- /wp:image -->'
+    )
+
+
+def _video_block(video_id):
+    """A Gutenberg-valid YouTube core/embed block, centered and width-capped
+    by wrapping it in a constrained core/group. (The editor previews core/embed
+    blocks properly; the old raw-iframe core/html block showed as an error.)"""
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    group_attrs = {
+        "style": {"spacing": {"margin": {"top": _MEDIA_MARGIN, "bottom": _MEDIA_MARGIN}}},
+        "layout": {"type": "constrained", "contentSize": f"{BODY_MEDIA_MAX_WIDTH_PX}px"},
+    }
+    embed_attrs = {
+        "url": url, "type": "video", "providerNameSlug": "youtube", "responsive": True,
+        "className": "wp-embed-aspect-16-9 wp-has-aspect-ratio",
+    }
+    return (
+        f'<!-- wp:group {json.dumps(group_attrs, separators=(",", ":"))} -->\n'
+        f'<div class="wp-block-group" style="margin-top:{_MEDIA_MARGIN};margin-bottom:{_MEDIA_MARGIN}">'
+        f'<!-- wp:embed {json.dumps(embed_attrs, separators=(",", ":"))} -->\n'
+        '<figure class="wp-block-embed is-type-video is-provider-youtube wp-block-embed-youtube '
+        'wp-embed-aspect-16-9 wp-has-aspect-ratio"><div class="wp-block-embed__wrapper">\n'
+        f'{url}\n'
+        '</div></figure>\n'
+        '<!-- /wp:embed --></div>\n'
+        '<!-- /wp:group -->'
+    )
+
+
+def _plain_figure(src, alt, caption="", media_id=None):
+    """Intermediate <figure> inserted into content_html BEFORE _blockify();
+    _blockify() turns it into the real block via _image_block()."""
+    cap = f"<figcaption>{html_lib.escape(caption)}</figcaption>" if caption else ""
+    id_attr = f' data-media-id="{int(media_id)}"' if media_id else ""
+    return (f'<figure data-deadikace-media="1"{id_attr}><img src="{_esc_attr(src)}" '
+            f'alt="{_esc_attr(alt)}"/>{cap}</figure>')
 
 
 def _get_featured_media_for_topic(topic, article_title, source_item_indices=None):
@@ -394,6 +461,14 @@ def _insert_illustrative_images(article, featured_image_hash=None, featured_imag
             continue
 
         caption_text = req.get("caption") or result["credit"]
+        # Does the picture really show what the caption claims? (Commons
+        # text search alone once returned a guitar in a display case for
+        # "<musician> performing live".) Fails closed: no image beats a
+        # wrong image.
+        if not verify_image_matches(image_bytes, caption_text):
+            print(f"[info] Skipping illustrative image for query {query!r}: "
+                  f"it does not clearly match its caption {caption_text!r}.")
+            continue
         try:
             media = upload_media(
                 image_bytes,
@@ -408,11 +483,8 @@ def _insert_illustrative_images(article, featured_image_hash=None, featured_imag
         if not media:
             continue
 
-        figure_html = (
-            f'<figure class="wp-block-image size-large" style="{_BODY_MEDIA_FIGURE_STYLE}">'
-            f'<img src="{media["source_url"]}" alt="{caption_text}" style="{_BODY_MEDIA_IMG_STYLE}" />'
-            f'<figcaption style="{_BODY_MEDIA_CAPTION_STYLE}">{caption_text} ({result["credit"]})</figcaption>'
-            f'</figure>'
+        figure_html = _plain_figure(
+            media["source_url"], caption_text, f'{caption_text} ({result["credit"]})', media.get("id"),
         )
 
         heading = (req.get("placement_after_heading") or "").strip()
@@ -442,85 +514,117 @@ def _insert_illustrative_images(article, featured_image_hash=None, featured_imag
     return article
 
 
-def _insert_video_embeds(article):
+def _block_text(block_html):
+    """Plain, lowercase, whitespace/quote-normalized text of a block."""
+    text = re.sub(r"<[^>]+>", " ", block_html)
+    text = html_lib.unescape(text)
+    text = text.replace("\u2019", "'").replace("\u2018", "'").replace("\u201c", '"').replace("\u201d", '"')
+    return " ".join(text.lower().split())
+
+
+_END_MARKER_PATTERNS = (
+    r"<!-- wp:paragraph[^>]*-->\s*<p[^>]*>\s*Related reading:",
+    r"<!-- wp:heading[^>]*-->\s*<h2[^>]*>\s*Sources\s*(?:&amp;|&)\s*Further Reading",
+    r"<!-- wp:heading[^>]*-->\s*<h2[^>]*>\s*Latest Posts",
+)
+
+
+def _end_of_article_position(content_html):
+    """Index just before the 'Sources & Further Reading' / 'Related reading' /
+    'Latest Posts' tail blocks (whichever comes first), i.e. the end of the
+    article proper; the end of the string if none of them exist."""
+    positions = []
+    for pattern in _END_MARKER_PATTERNS:
+        m = re.search(pattern, content_html, re.IGNORECASE)
+        if m:
+            positions.append(m.start())
+    return min(positions) if positions else len(content_html)
+
+
+def _find_paragraph_end(content_html, snippet, limit_pos):
+    """End index of the paragraph block whose text starts with / contains the
+    snippet (first match before limit_pos), or None."""
+    snippet_norm = _block_text(snippet)
+    if len(snippet_norm) < 12:
+        return None
+    best = None
+    for m in re.finditer(r"<!-- wp:paragraph[^>]*-->.*?<!-- /wp:paragraph -->", content_html, re.DOTALL):
+        if m.start() >= limit_pos:
+            break
+        text = _block_text(m.group(0))
+        if snippet_norm in text:
+            return m.end()
+        ratio = SequenceMatcher(None, snippet_norm, text[:len(snippet_norm) + 10]).ratio()
+        if ratio >= 0.85 and (best is None or ratio > best[0]):
+            best = (ratio, m.end())
+    return best[1] if best else None
+
+
+def _insert_video_embeds(article, allowed_video_urls=None):
     """
     Processes article["video_embeds"] (proposed by the drafting model --
-    see rule 4d in DRAFT_SYSTEM_PROMPT): splices a real YouTube <iframe>
-    embed into content_html at the requested position (right after the
-    named H2 heading's block, or mid-article as a fallback).
+    see rule 4d in DRAFT_SYSTEM_PROMPT) and splices proper YouTube embed
+    BLOCKS into content_html. Must run AFTER _blockify().
 
-    IMPORTANT: this must run AFTER _blockify(), not before. Two reasons:
-    1. A hand-built iframe is used instead of WordPress's bare-URL
-       oEmbed autoembed, because that depends on a live oEmbed API call
-       succeeding at render time and can silently leave a plain
-       unclickable link behind if a caching layer serves the page
-       before that resolves -- a direct iframe always works.
-    2. _blockify()'s regex only recognizes <p>/<h2>/<h3>/<figure>/<ol>/
-       <ul> and would wrap any <figure>-based embed as a "wp:image"
-       block, which is semantically wrong for a video and can trigger a
-       block-validation warning in the editor. Running this after
-       blockify and wrapping the embed in its own proper "wp:html"
-       block avoids that entirely.
+    - Only videos the SOURCE ARTICLE itself contained are accepted
+      (allowed_video_urls), so a hallucinated or off-topic URL can't get in.
+    - At most MAX_VIDEOS_PER_ARTICLE videos, deduplicated.
+    - placement "after_paragraph": the video goes directly BELOW the
+      paragraph identified by after_paragraph_text.
+    - placement "end" (or anything unrecognized, or a paragraph that can't
+      be found): after the last paragraph of the article body, before the
+      sources / related-reading / latest-posts tail.
     """
     video_list = article.get("video_embeds") or []
     if not video_list:
         return article
 
+    allowed_ids = None
+    if allowed_video_urls is not None:
+        allowed_ids = set()
+        for u in allowed_video_urls:
+            m = re.search(r"(?:v=|youtu\.be/|embed/)([A-Za-z0-9_-]{11})", u or "")
+            if m:
+                allowed_ids.add(m.group(1))
+
     content_html = article["content_html"]
+    used_ids = set()
 
     for video in video_list:
+        if len(used_ids) >= MAX_VIDEOS_PER_ARTICLE:
+            print(f"[info] Video cap ({MAX_VIDEOS_PER_ARTICLE}) reached; ignoring the remaining proposed videos.")
+            break
         url = (video.get("url") or "").strip()
-        if not url:
+        m = re.search(r"(?:v=|youtu\.be/|embed/)([A-Za-z0-9_-]{11})", url)
+        if not m:
+            continue
+        video_id = m.group(1)
+        if video_id in used_ids:
+            continue
+        if allowed_ids is not None and video_id not in allowed_ids:
+            print(f"[info] Ignoring proposed video {url}: it was not in the source article.")
             continue
 
-        video_id_match = re.search(r"(?:v=|youtu\.be/)([A-Za-z0-9_-]+)", url)
-        if not video_id_match:
-            continue
-        video_id = video_id_match.group(1)
+        embed_html = _video_block(video_id)
+        end_pos = _end_of_article_position(content_html)
 
-        # Outer wrapper matches the same centered, width-capped, spaced
-        # treatment as body images (_BODY_MEDIA_FIGURE_STYLE) so video
-        # embeds feel like part of the same consistent layout rather than
-        # a separately-styled element. The inner div keeps the classic
-        # padding-bottom aspect-ratio hack (16:9) so the video scales
-        # responsively without distortion at any width up to the outer
-        # wrapper's cap, on both desktop and mobile.
-        iframe_html = (
-            f'<div style="{_BODY_MEDIA_FIGURE_STYLE}">'
-            '<div style="position:relative;padding-bottom:56.25%;height:0;overflow:hidden;">'
-            f'<iframe src="https://www.youtube.com/embed/{video_id}" '
-            'title="YouTube video player" '
-            'style="position:absolute;top:0;left:0;width:100%;height:100%;" '
-            'frameborder="0" allow="accelerometer; autoplay; clipboard-write; '
-            'encrypted-media; gyroscope; picture-in-picture; web-share" '
-            'referrerpolicy="strict-origin-when-cross-origin" allowfullscreen>'
-            '</iframe></div></div>'
-        )
-        embed_html = f'<!-- wp:html -->\n{iframe_html}\n<!-- /wp:html -->'
+        placement = (video.get("placement") or "end").strip().lower()
+        insert_pos = None
+        where = "end of article"
+        if placement == "after_paragraph":
+            para_end = _find_paragraph_end(content_html, video.get("after_paragraph_text") or "", end_pos)
+            if para_end is not None:
+                insert_pos = para_end
+                where = "below its paragraph"
+        if insert_pos is None:
+            insert_pos = end_pos
+            # keep one blank line between the previous block and the video
+            content_html = content_html[:insert_pos].rstrip() + "\n\n" + embed_html + "\n\n" + content_html[insert_pos:].lstrip()
+        else:
+            content_html = content_html[:insert_pos] + "\n\n" + embed_html + content_html[insert_pos:]
 
-        heading = (video.get("placement_after_heading") or "").strip()
-        inserted = False
-        if heading:
-            heading_match = re.search(
-                r"(<!-- wp:heading -->\s*<h2[^>]*>\s*" + re.escape(heading)
-                + r"\s*</h2>\s*<!-- /wp:heading -->)",
-                content_html, re.IGNORECASE,
-            )
-            if heading_match:
-                insert_pos = heading_match.end()
-                content_html = content_html[:insert_pos] + "\n\n" + embed_html + content_html[insert_pos:]
-                inserted = True
-        if not inserted:
-            para_blocks = list(re.finditer(r"<!-- /wp:paragraph -->", content_html, re.IGNORECASE))
-            if para_blocks:
-                mid = para_blocks[len(para_blocks) // 2]
-                insert_pos = mid.end()
-                content_html = content_html[:insert_pos] + "\n\n" + embed_html + content_html[insert_pos:]
-            else:
-                content_html += "\n\n" + embed_html
-
-        print(f"[info] Embedded video {url} "
-              f"({'after heading' if inserted else 'mid-article fallback'}).")
+        used_ids.add(video_id)
+        print(f"[info] Embedded video {url} ({where}).")
 
     article["content_html"] = content_html
     return article
@@ -581,6 +685,10 @@ def _insert_source_images(article, featured_image_hash=None, featured_image_phas
 
         caption = (img_entry.get("caption") or "").strip()
         caption_or_fallback = caption or "Photo via source article"
+        if caption and not verify_image_matches(image_bytes, caption):
+            print(f"[info] Skipping source-body image {url}: it does not clearly match "
+                  f"its caption {caption!r}.")
+            continue
         try:
             media = upload_media(
                 image_bytes,
@@ -595,13 +703,7 @@ def _insert_source_images(article, featured_image_hash=None, featured_image_phas
         if not media:
             continue
 
-        figure_html = (
-            f'<figure class="wp-block-image size-large" style="{_BODY_MEDIA_FIGURE_STYLE}">'
-            f'<img src="{media["source_url"]}" alt="{caption}" style="{_BODY_MEDIA_IMG_STYLE}"/>'
-        )
-        if caption:
-            figure_html += f'<figcaption style="{_BODY_MEDIA_CAPTION_STYLE}">{caption}</figcaption>'
-        figure_html += '</figure>'
+        figure_html = _plain_figure(media["source_url"], caption, caption, media.get("id"))
 
         heading = (img_entry.get("placement_after_heading") or "").strip()
         inserted = False
@@ -672,13 +774,54 @@ def _blockify(content_html, font_size_px):
         elif m.group("h2"):
             parts.append(f'<!-- wp:heading -->\n{m.group("h2")}\n<!-- /wp:heading -->')
         elif m.group("figure"):
-            parts.append(f'<!-- wp:image {{"sizeSlug":"large"}} -->\n{m.group("figure")}\n<!-- /wp:image -->')
+            fig = m.group("figure")
+            src_m = re.search(r'<img[^>]*\ssrc="([^"]*)"', fig)
+            alt_m = re.search(r'<img[^>]*\salt="([^"]*)"', fig)
+            id_m = re.search(r'data-media-id="(\d+)"', fig)
+            cap_m = re.search(r"<figcaption[^>]*>(.*?)</figcaption>", fig, re.DOTALL)
+            if src_m:
+                parts.append(_image_block(
+                    html_lib.unescape(src_m.group(1)),
+                    html_lib.unescape(alt_m.group(1)) if alt_m else "",
+                    html_lib.unescape(re.sub(r"<[^>]+>", "", cap_m.group(1))).strip() if cap_m else "",
+                    id_m.group(1) if id_m else None,
+                ))
         elif m.group("ol"):
             parts.append(f'<!-- wp:list {{"ordered":true}} -->\n{m.group("ol")}\n<!-- /wp:list -->')
         elif m.group("ul"):
             parts.append(f'<!-- wp:list -->\n{m.group("ul")}\n<!-- /wp:list -->')
 
     return "\n\n".join(parts)
+
+
+def _drop_non_article_topics(topics):
+    """Deterministic pre-filter: quizzes, trivia, polls, galleries, giveaways,
+    deal roundups (judged from headline + URL) are never rewritable articles."""
+    kept = []
+    for topic in topics:
+        if any(looks_like_non_article(item) for item in topic["items"][:1]):
+            print(f"[info] Skipping non-article page (quiz/gallery/promo): {topic['items'][0]['title']}")
+            continue
+        kept.append(topic)
+    return kept
+
+
+def _apply_genre_priority(topics):
+    """Boost classic rock / blues / funk / folk / heavy rock / old-school
+    metal stories and demote indie, thrash/extreme metal and punk, using the
+    genre_tier set by draft.classify_topics(); then re-sort by score."""
+    for topic in topics:
+        tier = topic.get("genre_tier", "neutral")
+        if tier == "preferred":
+            topic["score"] = round(float(topic.get("score", 0)) + PREFERRED_GENRE_BONUS, 1)
+        elif tier == "deprioritized":
+            topic["score"] = round(float(topic.get("score", 0)) - DEPRIORITIZED_GENRE_PENALTY, 1)
+    topics.sort(key=lambda t: t.get("score", 0), reverse=True)
+    summary = ", ".join(
+        f"{t['items'][0]['title'][:50]} [{t.get('genre_tier', 'neutral')}]" for t in topics[:6]
+    )
+    print(f"[info] Genre priority applied. Top candidates now: {summary}")
+    return topics
 
 
 def run():
@@ -715,8 +858,15 @@ def run():
     # semantic relevance classifier later hits quota or returns malformed JSON.
     topics = _drop_obvious_metal_topics(topics)
 
+    topics = _drop_non_article_topics(topics)
+
     print("Filtering for rock-relevant topics (some feeds cover all genres)...")
     topics = filter_rock_relevant_topics(topics)
+
+    if topics:
+        print("Triaging topics (real article vs quiz/gallery/promo, and genre priority)...")
+        topics = classify_topics(topics)
+        topics = _apply_genre_priority(topics)
 
     if not topics:
         print("No rock-relevant topics found this run. Exiting.")
@@ -738,9 +888,6 @@ def run():
           "missed that two of them are actually the same underlying story...")
     topics = dedupe_topics_within_batch(topics)
     topics = _dedupe_topics_deterministic(topics)
-
-    print(f"Resolving target category '{TARGET_CATEGORY}'...")
-    category_id = get_or_create_category(TARGET_CATEGORY)
 
     latest_posts = get_latest_posts(LATEST_POSTS_COUNT)
 
@@ -812,6 +959,8 @@ def run():
                 print(f"[info] Final duplicate guard skipped after refinement: {article.get('title', headline)}")
                 continue
 
+            article = tighten_title(article)
+
             related = search_related_posts(article.get("focus_keyword", headline))
             if related:
                 links_html = "<p>Related reading: " + ", ".join(
@@ -831,10 +980,17 @@ def run():
             article = _insert_source_images(article, featured_image_hash, featured_image_phash)
             _append_latest_posts_block(article, latest_posts)
             article["content_html"] = _blockify(article["content_html"], ARTICLE_FONT_SIZE_PX)
-            article = _insert_video_embeds(article)
+            article = _insert_video_embeds(
+                article,
+                allowed_video_urls=[v["url"] for it in topic["items"] for v in (it.get("video_embeds") or [])],
+            )
+
+            category_kind = (article.get("category") or "latest-news").strip().lower()
+            category_ids = get_category_ids_for_kind(category_kind)
+            print(f"[info] Article category: {category_kind} -> category IDs {category_ids}")
 
             try:
-                result = create_post(article, category_id=category_id, featured_media_id=featured_media_id)
+                result = create_post(article, category_ids=category_ids, featured_media_id=featured_media_id)
             except Exception as e:
                 print(f"[error] Failed to publish article for '{article.get('title', headline)}': {e}")
                 continue

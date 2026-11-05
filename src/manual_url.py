@@ -31,6 +31,7 @@ from draft import (
     draft_article,
     research_additional_context,
     verify_and_refine,
+    tighten_title,
 )
 from main import (
     _append_latest_posts_block,
@@ -46,6 +47,7 @@ from main import (
 from wordpress import (
     check_connectivity,
     create_post,
+    get_category_ids_for_kind,
     get_latest_posts,
     get_or_create_category,
     get_recent_posts_for_dedup,
@@ -110,7 +112,7 @@ def _build_topic(source_url):
         "full_text": full_text,
         "image_url": image_url,
         "image_caption": image_caption,
-        "video_embeds": extract_video_embeds(html),
+        "video_embeds": extract_video_embeds(html, article_title=title),
         "body_images": extract_body_images(html, exclude_url_fragment=image_url),
     }
     return {
@@ -248,7 +250,6 @@ def run(source_url, force_create=False):
     if not articles:
         raise RuntimeError("The drafting step returned no article.")
 
-    category_id = get_or_create_category(TARGET_CATEGORY)
     latest_posts = get_latest_posts(LATEST_POSTS_COUNT)
     created_count = 0
 
@@ -272,6 +273,8 @@ def run(source_url, force_create=False):
             print(f"[manual] {_duplicate_message('Skipped refined duplicate', duplicate)}")
             continue
 
+        article = tighten_title(article)
+
         related = search_related_posts(article.get("focus_keyword", headline))
         if related:
             links_html = "<p>Related reading: " + ", ".join(
@@ -288,13 +291,19 @@ def run(source_url, force_create=False):
         article = _insert_source_images(article, featured_hash, featured_phash)
         _append_latest_posts_block(article, latest_posts)
         article["content_html"] = _blockify(article["content_html"], ARTICLE_FONT_SIZE_PX)
-        article = _insert_video_embeds(article)
+        article = _insert_video_embeds(
+            article,
+            allowed_video_urls=[v["url"] for it in topic["items"] for v in (it.get("video_embeds") or [])],
+        )
+        category_kind = (article.get("category") or "latest-news").strip().lower()
+        category_ids = get_category_ids_for_kind(category_kind)
+        print(f"[manual] Article category: {category_kind} -> category IDs {category_ids}")
 
         # Never inherit POST_STATUS here. A manual URL request is always a
         # reviewable WordPress draft, even when scheduled runs auto-publish.
         result = create_post(
             article,
-            category_id=category_id,
+            category_ids=category_ids,
             featured_media_id=featured_media_id,
             post_status="draft",
         )

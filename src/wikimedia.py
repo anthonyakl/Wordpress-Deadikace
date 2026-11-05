@@ -22,6 +22,18 @@ USER_AGENT = "DeadikaceAgent/1.0 (https://www.deadikace.com)"
 COMMONS_API = "https://commons.wikimedia.org/w/api.php"
 
 
+# Commons files about OBJECTS (a guitar in a museum case, memorabilia, wax
+# figures...) often mention a musician's name in the title and win the text
+# match for a "<musician> live" query. Unless the query itself asks for one
+# of these, such files are excluded.
+_OBJECT_ONLY_TERMS = {
+    "museum", "exhibit", "exhibition", "display", "displayed", "memorabilia",
+    "wax", "waxwork", "statue", "replica", "collection", "auction", "showcase",
+    "vitrine", "poster", "merchandise", "sculpture", "mural", "grave", "tomb",
+    "plaque",
+}
+
+
 def search_commons_image(query):
     """
     Searches Wikimedia Commons for an image matching the query. Returns a
@@ -76,6 +88,11 @@ def search_commons_image(query):
             continue
 
         title_words = set(re.findall(r"[a-z0-9]+", page.get("title", "").lower()))
+        desc_text = _clean_html(info.get("extmetadata", {}).get("ImageDescription", {}).get("value", ""))
+        desc_words = set(re.findall(r"[a-z0-9]+", desc_text.lower()))
+        object_terms = (title_words | desc_words) & _OBJECT_ONLY_TERMS
+        if object_terms - query_words:
+            continue
         relevance = len(query_words & title_words)
 
         aspect_ratio = max(width, height) / max(1, min(width, height))
@@ -137,6 +154,7 @@ def search_commons_image(query):
         "url": info["url"],
         "credit": credit,
         "title": page.get("title", "").replace("File:", ""),
+        "description": _clean_html(extmeta.get("ImageDescription", {}).get("value", ""))[:300],
     }
 
 
