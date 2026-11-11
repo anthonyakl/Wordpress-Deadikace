@@ -623,10 +623,16 @@ _TRANSIENT_MARKERS = (
     "503", "UNAVAILABLE", "overloaded", "high demand", "500", "INTERNAL",
     "529", "429", "RESOURCE_EXHAUSTED", "timed out", "timeout", "Connection",
 )
-_RETRY_DELAYS = (15, 45, 90)  # seconds; ~2.5 minutes total before giving up
+_PATIENT_DELAYS = (15, 45, 90)   # the article draft itself: worth waiting for
+_QUICK_DELAYS = (10,)            # optional helper calls: one short retry, then move on
+# Total time all retry pauses together may take in one run. Without a cap, a
+# provider outage made every optional AI step (filters, triage, duplicate
+# checks, research...) each wait minutes, and runs crawled for 10+ minutes.
+_RETRY_BUDGET_SECONDS = 240
+_retry_seconds_used = 0
 
 
-def _with_retries(fn, *args):
+def _with_retries(fn, patient, *args):
     """
     Calls fn(*args), retrying temporary provider errors (503 "high demand",
     500, 429 rate limits, timeouts) with growing pauses. For Gemini, after
@@ -634,8 +640,9 @@ def _with_retries(fn, *args):
     503 is usually specific to one model. Non-temporary errors (bad key, bad
     request) are raised immediately.
     """
-    global _ACTIVE_GEMINI_MODEL
-    for attempt in range(len(_RETRY_DELAYS) + 1):
+    global _ACTIVE_GEMINI_MODEL, _retry_seconds_used
+    delays = _PATIENT_DELAYS if patient else _QUICK_DELAYS
+    for attempt in range(len(delays) + 1):
         try:
             return fn(*args)
         except Exception as e:
@@ -654,24 +661,28 @@ def _with_retries(fn, *args):
                     continue
                 raise
             transient = any(marker in text for marker in _TRANSIENT_MARKERS)
-            if not transient or attempt == len(_RETRY_DELAYS):
+            if not transient or attempt == len(delays):
                 raise
-            delay = _RETRY_DELAYS[attempt]
+            delay = delays[attempt]
+            if _retry_seconds_used + delay > _RETRY_BUDGET_SECONDS:
+                print("[warn] Retry time budget for this run is used up; not waiting any longer.")
+                raise
+            _retry_seconds_used += delay
             if (LLM_PROVIDER == "gemini" and attempt >= 1
                     and GEMINI_FALLBACK_MODEL and _ACTIVE_GEMINI_MODEL != GEMINI_FALLBACK_MODEL):
                 print(f"[warn] {_ACTIVE_GEMINI_MODEL} keeps failing; switching to {GEMINI_FALLBACK_MODEL}.")
                 _ACTIVE_GEMINI_MODEL = GEMINI_FALLBACK_MODEL
             print(f"[warn] LLM call failed with a temporary error ({text[:120]!r}); "
-                  f"retrying in {delay}s (attempt {attempt + 2} of {len(_RETRY_DELAYS) + 1})...")
+                  f"retrying in {delay}s (attempt {attempt + 2} of {len(delays) + 1})...")
             time.sleep(delay)
 
 
-def _call_llm(system_prompt, user_prompt, max_tokens=4000):
-    return _with_retries(_call_llm_once, system_prompt, user_prompt, max_tokens)
+def _call_llm(system_prompt, user_prompt, max_tokens=4000, patient=False):
+    return _with_retries(_call_llm_once, patient, system_prompt, user_prompt, max_tokens)
 
 
 def _call_llm_with_search(system_prompt, user_prompt, max_tokens, max_searches):
-    return _with_retries(_call_llm_with_search_once, system_prompt, user_prompt, max_tokens, max_searches)
+    return _with_retries(_call_llm_with_search_once, False, system_prompt, user_prompt, max_tokens, max_searches)
 
 
 def research_additional_context(topic):
@@ -1184,7 +1195,7 @@ def draft_article(topic):
         "sources above. Respond with ONLY the JSON array, no other text."
     )
 
-    raw_text = _call_llm(DRAFT_SYSTEM_PROMPT, user_prompt, max_tokens=8000)
+    raw_text = _call_llm(DRAFT_SYSTEM_PROMPT, user_prompt, max_tokens=8000, patient=True)
     raw_text = _clean_json_text(raw_text)
 
     try:

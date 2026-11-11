@@ -10,6 +10,12 @@ import time
 import re
 from difflib import SequenceMatcher
 
+# Show log lines live in GitHub Actions instead of all at once at the end.
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+except Exception:
+    pass
+
 from config import (
     MAX_ARTICLES_PER_RUN, POST_STATUS, TARGET_CATEGORY, LATEST_POSTS_COUNT,
     ARTICLE_FONT_SIZE_PX, ENABLE_SOURCE_IMAGES, BODY_MEDIA_MAX_WIDTH_PX,
