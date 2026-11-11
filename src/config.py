@@ -55,16 +55,15 @@ CLAUDE_MODEL = _env("CLAUDE_MODEL", "claude-sonnet-4-6")
 
 # --- Google Gemini API --- only required if LLM_PROVIDER == "gemini"
 GEMINI_API_KEY = _env("GEMINI_API_KEY")
-# "gemini-flash-lite-latest" is Google's auto-updating alias for their
-# current lite model -- it has the most generous free-tier quota (as of
-# writing: 15 requests/min, 1,000/day) and avoids breaking again when
-# Google retires a specific dated model version. Override via the
-# GEMINI_MODEL secret if you want a specific model instead.
-GEMINI_MODEL = _env("GEMINI_MODEL", "gemini-flash-lite-latest")
+# Default: "gemini-3.5-flash-lite", a STABLE Google model id (generous free
+# tier). The old "gemini-flash-lite-latest" alias is not in Google's published
+# model list and started answering "404 model not found", so it is no longer
+# used. Override via the GEMINI_MODEL setting if you want a different model.
+GEMINI_MODEL = _env("GEMINI_MODEL", "gemini-3.5-flash-lite")
 # Used automatically if GEMINI_MODEL keeps answering "503 high demand" /
 # "overloaded" after several retries (that error is per-model, so a different
 # model usually works straight away).
-GEMINI_FALLBACK_MODEL = _env("GEMINI_FALLBACK_MODEL", "gemini-flash-latest")
+GEMINI_FALLBACK_MODEL = _env("GEMINI_FALLBACK_MODEL", "gemini-3.1-flash-lite")
 
 # --- Behavior ---
 # "publish" = goes live immediately. "draft" = saved in WP for you to review first.

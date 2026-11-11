@@ -917,6 +917,7 @@ def run():
     latest_posts = get_latest_posts(LATEST_POSTS_COUNT)
 
     published_count = 0
+    systemic_llm_failure = False
     for topic in topics:
         # Topics are sorted best-first, so once a topic is too weak for a
         # bonus slot every later one is too.
@@ -954,6 +955,7 @@ def run():
                       "config issue), not specific to this topic. Stopping this run "
                       "early instead of retrying every topic with the same failure. "
                       "Check your provider's dashboard and model name before the next run.")
+                systemic_llm_failure = True
                 break
             continue
 
@@ -1039,6 +1041,11 @@ def run():
             time.sleep(2)
 
     print(f"Done. Published/drafted {published_count} article(s) this run.")
+    if systemic_llm_failure and published_count == 0:
+        # Make the run show up RED in GitHub Actions instead of a misleading
+        # green tick when the AI provider is broken and nothing was published.
+        print("[fatal] Run failed: the AI provider returned a systemic error and nothing was published.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

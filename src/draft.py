@@ -614,6 +614,10 @@ def _call_llm_with_search_once(system_prompt, user_prompt, max_tokens, max_searc
         raise ValueError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER!r} (expected 'anthropic' or 'gemini')")
 
 _ACTIVE_GEMINI_MODEL = GEMINI_MODEL
+_MODELS_TRIED_404 = set()
+# Stable ids from Google's published model list, used only if the configured
+# model id stops existing.
+_BUILTIN_GEMINI_CANDIDATES = ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite")
 
 _TRANSIENT_MARKERS = (
     "503", "UNAVAILABLE", "overloaded", "high demand", "500", "INTERNAL",
@@ -636,6 +640,19 @@ def _with_retries(fn, *args):
             return fn(*args)
         except Exception as e:
             text = str(e)
+            # "404 NOT_FOUND ... models/xyz is not found": Google renamed or
+            # retired that model id. Switch at once to the next known-good
+            # model instead of failing the whole run.
+            if (LLM_PROVIDER == "gemini" and "NOT_FOUND" in text and "models/" in text):
+                tried = _MODELS_TRIED_404
+                tried.add(_ACTIVE_GEMINI_MODEL)
+                nxt = next((m for m in (GEMINI_MODEL, GEMINI_FALLBACK_MODEL, *_BUILTIN_GEMINI_CANDIDATES)
+                            if m and m not in tried), None)
+                if nxt:
+                    print(f"[warn] Gemini model {_ACTIVE_GEMINI_MODEL!r} was not found; switching to {nxt!r}.")
+                    _ACTIVE_GEMINI_MODEL = nxt
+                    continue
+                raise
             transient = any(marker in text for marker in _TRANSIENT_MARKERS)
             if not transient or attempt == len(_RETRY_DELAYS):
                 raise
